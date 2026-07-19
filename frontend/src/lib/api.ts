@@ -1,7 +1,7 @@
 export interface Card {
 	index: number;
 	name: string;
-	arcana: 'major' | 'minor';
+	arcana: 'major' | 'minor' | 'extra';
 	suit: string | null;
 	rank: string | null;
 	number: number | null;
@@ -10,6 +10,11 @@ export interface Card {
 	description?: string | null;
 	pkt_upright?: string | null;
 	pkt_reversed?: string | null;
+}
+
+export interface DeckExtra {
+	index: number;
+	name: string;
 }
 
 export interface DeckSummary {
@@ -21,6 +26,8 @@ export interface DeckSummary {
 	count: number;
 	complete: boolean;
 	majors_only: boolean;
+	extras: DeckExtra[];
+	missing: number[];
 	has_back: boolean;
 	owner: string | null;
 	shared: boolean;
@@ -142,8 +149,14 @@ export const api = {
 	cards: () => get<Card[]>('/api/cards'),
 	decks: () => get<DeckSummary[]>('/api/decks'),
 	spreads: () => get<Spread[]>('/api/spreads'),
-	draw: (deck: string, spread: string, reversals: boolean, question?: string) =>
-		send<Reading>('POST', '/api/draw', { deck, spread, reversals, question: question || null }),
+	draw: (deck: string, spread: string, reversals: boolean, question?: string, includeExtras = false) =>
+		send<Reading>('POST', '/api/draw', {
+			deck,
+			spread,
+			reversals,
+			include_extras: includeExtras,
+			question: question || null
+		}),
 	shareDeck: (slug: string, shared: boolean) =>
 		send<{ slug: string; shared: boolean }>('POST', `/api/decks/${slug}/share`, { shared }),
 	readings: () => get<SavedReading[]>('/api/readings'),

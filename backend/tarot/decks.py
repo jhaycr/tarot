@@ -42,6 +42,9 @@ class Deck:
     owner: str | None = None  # None = builtin/instance deck, visible to all
     shared: bool = False
     cards: dict[int, Path] = field(default_factory=dict)
+    # deck-specific cards beyond the canonical 78 (e.g. invented majors),
+    # addressed as index 78+position: [(index, display name, path), ...]
+    extras: list[tuple[int, str, Path]] = field(default_factory=list)
     back: Path | None = None
 
     @property
@@ -51,6 +54,14 @@ class Deck:
     @property
     def majors_only(self) -> bool:
         return len(self.cards) == 22 and all(i < 22 for i in self.cards)
+
+    def image_for(self, index: int) -> Path | None:
+        if index < 78:
+            return self.cards.get(index)
+        for i, _, path in self.extras:
+            if i == index:
+                return path
+        return None
 
 
 def _load_deck(deck_path: Path, owner: str | None = None) -> Deck | None:
@@ -76,6 +87,17 @@ def _load_deck(deck_path: Path, owner: str | None = None) -> Deck | None:
             stem = f.stem
             if stem.isdigit() and 0 <= int(stem) <= 77:
                 deck.cards[int(stem)] = f
+    extras_dir = deck_path / "extras"
+    if extras_dir.is_dir():
+        names = manifest.get("extras") or {}  # optional {file-stem: display name}
+        files = sorted(
+            f for f in extras_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTS
+        )
+        deck.extras = [
+            (78 + i, names.get(f.stem) or f.stem.replace("-", " ").replace("_", " ").title(), f)
+            for i, f in enumerate(files)
+        ]
     back_name = manifest.get("back")
     if back_name and (deck_path / back_name).is_file():
         deck.back = deck_path / back_name

@@ -95,6 +95,8 @@ def list_decks(user: User):
             "count": len(d.cards),
             "complete": d.complete,
             "majors_only": d.majors_only,
+            "extras": [{"index": i, "name": n} for i, n, _ in d.extras],
+            "missing": [] if d.complete else sorted(set(range(78)) - set(d.cards)),
             "has_back": d.back is not None,
             "owner": d.owner,
             "shared": d.shared,
@@ -107,7 +109,7 @@ def list_decks(user: User):
 @app.get("/api/decks/{slug}/cards/{index}")
 def card_image(slug: str, index: int, user: User):
     deck = get_deck_or_404(slug, user)
-    path = deck.cards.get(index)
+    path = deck.image_for(index)
     if not path:
         raise HTTPException(404, f"card {index} missing from deck '{slug}'")
     return FileResponse(path, headers=IMAGE_CACHE)
@@ -249,12 +251,16 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
         raise HTTPException(400, "not a zip file")
 
     entries: dict[str, str] = {}  # stem -> zip entry name
+    extra_entries: list[str] = []  # anything under an extras/ folder: deck-specific bonus cards
     for entry in zf.namelist():
         base = os.path.basename(entry)
         stem, ext = os.path.splitext(base)
         if not stem or base.startswith(".") or ext.lower() not in IMAGE_EXTS:
             continue
-        entries.setdefault(stem, entry)
+        if "extras" in entry.replace("\\", "/").split("/")[:-1]:
+            extra_entries.append(entry)
+        else:
+            entries.setdefault(stem, entry)
 
     mapping, back_stem, problems = importer.map_filenames(list(entries))
     complete = len(mapping) == 78 or (len(mapping) == 22 and all(i < 22 for i in mapping))
@@ -278,6 +284,11 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
         entry = entries[back_stem]
         ext = os.path.splitext(entry)[1].lower()
         (dest / f"back{ext}").write_bytes(zf.read(entry))
+    if extra_entries:
+        extras_dir = dest / "extras"
+        extras_dir.mkdir()
+        for entry in extra_entries:
+            (extras_dir / os.path.basename(entry)).write_bytes(zf.read(entry))
     (dest / "manifest.yaml").write_text(
         yaml.safe_dump({"name": name, "attribution": f"Uploaded by {user}"}, sort_keys=False, allow_unicode=True)
     )
@@ -310,6 +321,7 @@ class DrawRequest(BaseModel):
     deck: str
     spread: str
     reversals: bool = True
+    include_extras: bool = False  # opt-in: deck-specific cards beyond the 78
     question: str | None = Field(default=None, max_length=500)
 
 
@@ -321,19 +333,28 @@ def draw(req: DrawRequest, user: User):
         raise HTTPException(404, f"spread '{req.spread}' not found")
 
     available = sorted(deck.cards.keys())
+    extras_by_index = {i: n for i, n, _ in deck.extras}
+    if req.include_extras:
+        available += sorted(extras_by_index)
     if len(available) < len(spread["positions"]):
         raise HTTPException(
             400,
             f"deck '{req.deck}' has {len(available)} cards; "
             f"the {spread['name']} spread needs {len(spread['positions'])}",
         )
+
+    def card_payload(i: int) -> dict:
+        if i < 78:
+            return asdict(CARDS[i])
+        return {"index": i, "name": extras_by_index[i], "arcana": "extra", "suit": None, "rank": None, "number": None}
+
     rng = secrets.SystemRandom()
     chance = reversal_chance() / 100
     indices = rng.sample(available, len(spread["positions"]))
     drawn = [
         {
             "position": pos,
-            "card": asdict(CARDS[i]),
+            "card": card_payload(i),
             "reversed": req.reversals and rng.random() < chance,
         }
         for pos, i in zip(spread["positions"], indices)

@@ -39,6 +39,16 @@
 		return pinned.length ? pinned : orderedDecks.slice(0, 3);
 	});
 	const hiddenDeckCount = $derived(decks.length - visibleDecks.length);
+	const selectedDeck = $derived(decks.find((d) => d.slug === prefDeck.value));
+
+	let includeExtras = $state(false);
+	$effect(() => {
+		includeExtras = localStorage.getItem(`tarot.extras.${prefDeck.value}`) === 'true';
+	});
+	function setIncludeExtras(v: boolean) {
+		includeExtras = v;
+		localStorage.setItem(`tarot.extras.${prefDeck.value}`, String(v));
+	}
 
 	$effect(() => {
 		Promise.all([api.decks(), api.spreads()])
@@ -60,7 +70,8 @@
 				prefDeck.value,
 				prefSpread.value,
 				prefReversals.value === 'true',
-				question.trim() || undefined
+				question.trim() || undefined,
+				includeExtras && (selectedDeck?.extras.length ?? 0) > 0
 			);
 			pushRecentDeck(prefDeck.value);
 			readingStore.set(reading);
@@ -149,6 +160,21 @@
 		<input type="checkbox" checked={prefReversals.value === 'true'} onchange={(e) => (prefReversals.value = String(e.currentTarget.checked))} />
 		<span>Allow reversed cards</span>
 	</label>
+
+	{#if (selectedDeck?.extras.length ?? 0) > 0}
+		<label class="field row">
+			<input
+				type="checkbox"
+				checked={includeExtras}
+				onchange={(e) => setIncludeExtras(e.currentTarget.checked)}
+			/>
+			<span>
+				Include this deck's {selectedDeck!.extras.length}
+				extra {selectedDeck!.extras.length === 1 ? 'card' : 'cards'}
+				<small class="dim">({selectedDeck!.extras.map((x) => x.name).join(', ')})</small>
+			</span>
+		</label>
+	{/if}
 
 	{#if error}<p class="error">{error}</p>{/if}
 

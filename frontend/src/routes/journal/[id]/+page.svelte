@@ -30,6 +30,10 @@
 
 	const compatibleDecks = $derived.by(() => {
 		if (!reading) return [];
+		// readings containing deck-specific extra cards can't be re-skinned
+		if (reading.cards.some((c) => c.card.index >= 78)) {
+			return decks.filter((d) => d.slug === reading!.deck);
+		}
 		const majorsFine = reading.cards.every((c) => c.card.index < 22);
 		return decks.filter(
 			(d) => d.slug === reading!.deck || d.complete || (d.majors_only && majorsFine)

@@ -184,6 +184,16 @@ def import_dir(
     if back_stem:
         f = files[back_stem]
         (deck_dir / f"back{f.suffix.lower()}").write_bytes(f.read_bytes())
+    src_extras = src / "extras"
+    if src_extras.is_dir():
+        (deck_dir / "extras").mkdir(exist_ok=True)
+        n = 0
+        for f in sorted(src_extras.iterdir()):
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+                (deck_dir / "extras" / f.name).write_bytes(f.read_bytes())
+                n += 1
+        if n:
+            print(f"  + {n} extra cards")
 
     (deck_dir / "manifest.yaml").write_text(
         yaml.safe_dump({"name": name, "attribution": f"Imported from {src}"}, sort_keys=False, allow_unicode=True)

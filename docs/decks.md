@@ -8,9 +8,11 @@ A deck is a folder:
 decks/<slug>/
 ├── manifest.yaml       # metadata (below)
 ├── back.jpg            # optional card-back image (any IMAGE_EXT)
-└── cards/
-    ├── 00.jpg          # canonical index, zero-padded, any of .jpg .jpeg .png .webp .gif
-    └── … 77.jpg
+├── cards/
+│   ├── 00.jpg          # canonical index, zero-padded, any of .jpg .jpeg .png .webp .gif
+│   └── … 77.jpg
+└── extras/             # optional deck-specific cards beyond the 78 (see Extras)
+    └── the-happy-squirrel.jpg
 ```
 
 **Canonical index** (the contract joining images, meanings, and draws):
@@ -38,6 +40,15 @@ shared: true                    # user decks only: visible to everyone on the in
 labeled "majors only" and readings draw only from those cards. More generally,
 draws only ever use cards the deck actually has; a spread that needs more
 cards than the deck holds is rejected.
+
+**Extras**: some decks invent cards beyond the canonical 78 (additional majors,
+artist cards). Put their images in an `extras/` folder — filenames become the
+display names (`the-happy-squirrel.jpg` → "The Happy Squirrel"), overridable via
+`extras: {file-stem: Display Name}` in the manifest. Extras appear in their own
+deck-gallery section and join draws only when the querent opts in per deck on
+the reading setup page. They have no canonical meanings, and readings containing
+them can't be re-skinned with other decks. Zips and folder imports pick up an
+`extras/` folder automatically.
 
 ## Where decks live
 
