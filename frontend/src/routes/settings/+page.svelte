@@ -15,6 +15,9 @@
 	let llmSaved = $state(true);
 	let llmError = $state('');
 
+	let reversalChance = $state(25);
+	let reversalSaved = $state(true);
+
 	$effect(() => {
 		api.getPrompt().then((r) => {
 			prompt = r.prompt;
@@ -22,9 +25,18 @@
 		});
 		api.me().then((m) => {
 			isAdmin = m.is_admin;
-			if (m.is_admin) refreshLlm();
+			if (m.is_admin) {
+				refreshLlm();
+				api.getReadingSettings().then((s) => (reversalChance = s.reversal_chance));
+			}
 		});
 	});
+
+	async function saveReversal() {
+		const s = await api.setReadingSettings({ reversal_chance: reversalChance });
+		reversalChance = s.reversal_chance;
+		reversalSaved = true;
+	}
 
 	async function refreshLlm() {
 		const s = await api.getLlmSettings();
@@ -66,6 +78,28 @@
 <h1>Settings</h1>
 
 {#if isAdmin}
+	<section>
+		<h2>Readings <small class="dim">(admin)</small></h2>
+		<label class="fld">
+			<span>Reversal chance — how often a drawn card lands reversed (when the querent allows
+				reversals). Physical decks rarely exceed ~25%; 50% is a fully scrambled deck.</span>
+			<span class="range">
+				<input
+					type="range"
+					min="0"
+					max="100"
+					step="5"
+					bind:value={reversalChance}
+					oninput={() => (reversalSaved = false)}
+				/>
+				<strong>{reversalChance}%</strong>
+			</span>
+		</label>
+		<button onclick={saveReversal} disabled={reversalSaved}>
+			{reversalSaved ? 'Saved' : 'Save'}
+		</button>
+	</section>
+
 	<section>
 		<h2>AI connection <small class="dim">(admin)</small></h2>
 		<p class="dim">
@@ -184,6 +218,23 @@
 
 	.error {
 		color: var(--danger);
+	}
+
+	.range {
+		display: flex;
+		align-items: center;
+		gap: 0.8rem;
+	}
+
+	.range input {
+		flex: 1;
+		accent-color: var(--gold);
+	}
+
+	.range strong {
+		color: var(--gold-bright);
+		min-width: 3rem;
+		text-align: right;
 	}
 
 	code {

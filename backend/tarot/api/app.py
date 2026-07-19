@@ -295,6 +295,17 @@ def list_spreads():
     return SPREADS
 
 
+DEFAULT_REVERSAL_CHANCE = 25  # percent — "some": reversals stay meaningful because they're uncommon
+
+
+def reversal_chance() -> int:
+    stored = db.get_setting("reversal_chance")
+    try:
+        return max(0, min(100, int(stored)))
+    except (TypeError, ValueError):
+        return DEFAULT_REVERSAL_CHANCE
+
+
 class DrawRequest(BaseModel):
     deck: str
     spread: str
@@ -317,12 +328,13 @@ def draw(req: DrawRequest, user: User):
             f"the {spread['name']} spread needs {len(spread['positions'])}",
         )
     rng = secrets.SystemRandom()
+    chance = reversal_chance() / 100
     indices = rng.sample(available, len(spread["positions"]))
     drawn = [
         {
             "position": pos,
             "card": asdict(CARDS[i]),
-            "reversed": req.reversals and rng.random() < 0.5,
+            "reversed": req.reversals and rng.random() < chance,
         }
         for pos, i in zip(spread["positions"], indices)
     ]
@@ -399,6 +411,26 @@ def set_llm_settings(req: LlmSettingsRequest, user: User):
     if req.api_key is not None:
         db.set_setting("llm_api_key", crypto.encrypt(req.api_key.strip()) if req.api_key.strip() else "")
     return get_llm_settings(user)
+
+
+class ReadingSettingsRequest(BaseModel):
+    reversal_chance: int = Field(ge=0, le=100)
+
+
+@app.get("/api/settings/reading")
+def get_reading_settings(user: User):
+    require_admin(user)
+    return {"reversal_chance": reversal_chance(), "default": DEFAULT_REVERSAL_CHANCE}
+
+
+@app.put("/api/settings/reading")
+def set_reading_settings(req: ReadingSettingsRequest, user: User):
+    require_admin(user)
+    db.set_setting(
+        "reversal_chance",
+        "" if req.reversal_chance == DEFAULT_REVERSAL_CHANCE else str(req.reversal_chance),
+    )
+    return get_reading_settings(user)
 
 
 class PromptRequest(BaseModel):

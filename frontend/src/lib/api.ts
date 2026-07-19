@@ -113,6 +113,10 @@ export const api = {
 			error: string | null;
 			total: number;
 		}>(`/api/decks/download/${job}`),
+	getReadingSettings: () =>
+		get<{ reversal_chance: number; default: number }>('/api/settings/reading'),
+	setReadingSettings: (s: { reversal_chance: number }) =>
+		send<{ reversal_chance: number; default: number }>('PUT', '/api/settings/reading', s),
 	getLlmSettings: () =>
 		get<{ base_url: string; model: string; api_key_set: boolean; from_env: boolean }>(
 			'/api/settings/llm'
