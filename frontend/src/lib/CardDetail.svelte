@@ -1,7 +1,11 @@
 <script lang="ts">
 	import type { Card, DrawnCard } from '$lib/api';
 
-	let { drawn, meta }: { drawn: DrawnCard; meta: Card[] } = $props();
+	let {
+		drawn,
+		meta,
+		onZoom = null
+	}: { drawn: DrawnCard; meta: Card[]; onZoom?: (() => void) | null } = $props();
 
 	const card = $derived(meta.find((c) => c.index === drawn.card.index));
 	const keywords = $derived(
@@ -31,6 +35,9 @@
 				<p class="dim">Waite gives no reversed meaning for this card; upright: {card.pkt_upright}</p>
 			{/if}
 		</details>
+	{/if}
+	{#if onZoom}
+		<button class="zoom" onclick={onZoom}>⤢ View full art</button>
 	{/if}
 </aside>
 
@@ -75,5 +82,11 @@
 
 	.dim {
 		color: var(--text-dim);
+	}
+
+	.zoom {
+		margin-top: 0.8rem;
+		font-size: 0.85rem;
+		padding: 0.35rem 0.8rem;
 	}
 </style>

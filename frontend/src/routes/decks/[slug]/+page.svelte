@@ -14,15 +14,20 @@
 	});
 </script>
 
-<h1>{deck?.name ?? slug}</h1>
-{#if deck?.attribution || deck?.source}
-	<p class="dim">
-		{deck?.attribution ?? ''}
-		{#if deck?.source}
-			· <a href={deck.source} target="_blank" rel="noreferrer">source</a>
+<header class="top">
+	<div>
+		<h1>{deck?.name ?? slug}</h1>
+		{#if deck?.attribution || deck?.source}
+			<p class="dim">
+				{deck?.attribution ?? ''}
+				{#if deck?.source}
+					· <a href={deck.source} target="_blank" rel="noreferrer">source</a>
+				{/if}
+			</p>
 		{/if}
-	</p>
-{/if}
+	</div>
+	<a class="export" href="/api/decks/{slug}/export" download="{slug}.zip">⇩ Export zip</a>
+</header>
 
 <div class="grid">
 	{#each cards as card (card.index)}
@@ -103,5 +108,24 @@
 
 	.dim {
 		color: var(--text-dim);
+	}
+
+	.top {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 1rem;
+		flex-wrap: wrap;
+	}
+
+	.export {
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.45rem 0.9rem;
+		color: var(--text);
+	}
+
+	.export:hover {
+		border-color: var(--gold);
 	}
 </style>

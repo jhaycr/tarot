@@ -53,10 +53,14 @@
 			.filter(({ drawn }) => drawn.position.col === col && drawn.position.row === row);
 	}
 
+	function keywordsFor(drawn: DrawnCard): string | null {
+		const m = meta.find((c) => c.index === drawn.card.index);
+		return (drawn.reversed ? m?.reversed_meaning : m?.upright) ?? null;
+	}
+
 	function slotClick(i: number) {
 		if (!flips[i]) return;
-		if (selected === i) zoomed = reading!.cards[i];
-		else selected = i;
+		selected = selected === i ? null : i;
 	}
 
 	function revealAll() {
@@ -105,8 +109,8 @@
 			<div>
 				{#if reading.question}<h1>“{reading.question}”</h1>{/if}
 				<p class="dim">
-					{deckInfo?.name ?? reading.deck} · tap the glowing card to continue · tap a revealed card
-					for its meaning, again for full art
+					{deckInfo?.name ?? reading.deck} · tap the glowing card to continue · hover a revealed
+					card for the gist, tap it for the full meaning
 				</p>
 			</div>
 			<div class="actions">
@@ -141,9 +145,11 @@
 										hasBack={deckInfo?.has_back ?? false}
 										cross={drawn.position.cross ?? false}
 										next={i === nextIdx}
+										keywords={keywordsFor(drawn)}
+										showTip={selected !== i}
 										bind:flipped={
 											() => flips[i],
-											(v) => { flips[i] = v; if (v) selected = i; }
+											(v) => { flips[i] = v; }
 										}
 									/>
 									<span class="pos" class:nextpos={i === nextIdx && !flips[i]}>{drawn.position.name}</span>
@@ -156,8 +162,7 @@
 											onclick={(e) => e.stopPropagation()}
 										>
 											<button class="close" onclick={() => (selected = null)} aria-label="Close">✕</button>
-											<CardDetail {drawn} {meta} />
-											<button class="zoom" onclick={() => (zoomed = drawn)}>⤢ View full art</button>
+											<CardDetail {drawn} {meta} onZoom={() => (zoomed = drawn)} />
 										</div>
 									{/if}
 								</div>
@@ -311,10 +316,8 @@
 		border-radius: 6px;
 	}
 
-	.popover .zoom {
-		margin: 0 1rem 0.9rem;
-		font-size: 0.85rem;
-		padding: 0.35rem 0.8rem;
+	.popover :global(.detail .zoom) {
+		margin: 0 0 0.5rem;
 	}
 
 	@media (max-width: 700px) {

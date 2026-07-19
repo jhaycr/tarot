@@ -123,7 +123,7 @@
 										class="faceup"
 										class:cross={drawn.position.cross}
 										class:selected={selected === i}
-										onclick={() => (selected = selected === i ? (zoomed = drawn, i) : i)}
+										onclick={() => (selected = selected === i ? null : i)}
 									>
 										<img
 											src={api.cardImage(viewDeck, drawn.card.index)}
@@ -148,7 +148,7 @@
 				<button
 					class="drawn"
 					class:selected={selected === i}
-					onclick={() => (selected = selected === i ? (zoomed = drawn, i) : i)}
+					onclick={() => (selected = selected === i ? null : i)}
 				>
 					<img
 						src={api.cardImage(viewDeck, drawn.card.index)}
@@ -164,7 +164,8 @@
 	{/if}
 
 	{#if selected !== null}
-		<CardDetail drawn={reading.cards[selected]} {meta} />
+		{@const sel = reading.cards[selected]}
+		<CardDetail drawn={sel} {meta} onZoom={() => (zoomed = sel)} />
 	{/if}
 
 	{#if reading.yours}

@@ -13,7 +13,7 @@ from typing import Annotated
 
 import yaml
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -123,6 +123,26 @@ def back_image(slug: str, user: User):
 
 class ShareRequest(BaseModel):
     shared: bool
+
+
+@app.get("/api/decks/{slug}/export")
+def export_deck(slug: str, user: User):
+    """Zip a deck back up (numbered card files + back + manifest) for download."""
+    deck = get_deck_or_404(slug, user)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:  # images don't recompress
+        for index, path in sorted(deck.cards.items()):
+            z.write(path, f"cards/{index:02d}{path.suffix.lower()}")
+        if deck.back:
+            z.write(deck.back, f"back{deck.back.suffix.lower()}")
+        manifest = deck.path / "manifest.yaml"
+        if manifest.is_file():
+            z.write(manifest, "manifest.yaml")
+    return Response(
+        buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{slug}.zip"'},
+    )
 
 
 @app.post("/api/decks/{slug}/share")

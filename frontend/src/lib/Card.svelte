@@ -7,7 +7,9 @@
 		hasBack,
 		flipped = $bindable(false),
 		cross = false,
-		next = false
+		next = false,
+		keywords = null,
+		showTip = true
 	}: {
 		drawn: DrawnCard;
 		deck: string;
@@ -15,6 +17,8 @@
 		flipped?: boolean;
 		cross?: boolean;
 		next?: boolean;
+		keywords?: string | null;
+		showTip?: boolean;
 	} = $props();
 </script>
 
@@ -43,6 +47,11 @@
 		<span class="tip" role="tooltip">
 			<strong>{drawn.position.name}</strong> — {drawn.position.meaning}
 			{#if next}<em>· flip next</em>{/if}
+		</span>
+	{:else if showTip}
+		<span class="tip" role="tooltip">
+			<strong>{drawn.position.name}</strong> — {drawn.position.meaning}
+			{#if keywords}<span class="kw">{keywords}</span>{/if}
 		</span>
 	{/if}
 </button>
@@ -151,6 +160,12 @@
 	.tip em {
 		color: var(--gold);
 		font-style: normal;
+	}
+
+	.tip .kw {
+		display: block;
+		margin-top: 0.25rem;
+		color: var(--gold-bright);
 	}
 
 	.card:hover .tip,
