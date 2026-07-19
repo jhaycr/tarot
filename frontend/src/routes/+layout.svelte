@@ -36,8 +36,8 @@
 				<a href={link.href} class:active={isActive(link.href)}>{link.label}</a>
 			{/each}
 		</nav>
-		{#if user && user !== 'local'}
-			<span class="user">{user}</span>
+		{#if user}
+			<span class="user" title="Readings and decks are saved under this name">☾ {user}</span>
 		{/if}
 	</header>
 	<main>
