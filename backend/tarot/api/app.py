@@ -19,7 +19,7 @@ from tarot.cards import CARDS
 from tarot.decks import discover_decks, set_deck_shared
 from tarot.spreads import SPREADS, SPREADS_BY_SLUG
 
-app = FastAPI(title="Ten of Swords Tarot", docs_url="/api/docs", openapi_url="/api/openapi.json")
+app = FastAPI(title="Tarotarium", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
 IMAGE_CACHE = {"Cache-Control": "public, max-age=604800"}
 

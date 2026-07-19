@@ -1,7 +1,7 @@
 {
-	"name": "Ten of Swords Tarot",
-	"short_name": "Ten of Swords",
-	"description": "Self-hosted tarot readings",
+	"name": "Tarotarium",
+	"short_name": "Tarotarium",
+	"description": "Self-hosted tarot readings — a planetarium for the cards",
 	"start_url": "/",
 	"display": "standalone",
 	"background_color": "#12101c",

@@ -1,6 +1,6 @@
-# Ten of Swords Tarot — self-hosted tarot
+# Tarotarium — self-hosted tarot
 
-*Rock bottom, and the dawn breaking behind it.*
+*A planetarium for the cards: seventy-eight small skies to sit under.*
 
 Multi-deck tarot reader: draws and spreads, card meanings, a reading journal,
 optional LLM interpretation, and a deck downloader (`tarot-dl`). Ships as a
