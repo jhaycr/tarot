@@ -1,6 +1,6 @@
 {
-	"name": "Arcana Tarot",
-	"short_name": "Arcana",
+	"name": "Ten of Swords Tarot",
+	"short_name": "Ten of Swords",
 	"description": "Self-hosted tarot readings",
 	"start_url": "/",
 	"display": "standalone",

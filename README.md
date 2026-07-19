@@ -1,4 +1,6 @@
-# Arcana — self-hosted tarot
+# Ten of Swords Tarot — self-hosted tarot
+
+*Rock bottom, and the dawn breaking behind it.*
 
 Multi-deck tarot reader: draws and spreads, card meanings, a reading journal,
 optional LLM interpretation, and a deck downloader (`tarot-dl`). Ships as a

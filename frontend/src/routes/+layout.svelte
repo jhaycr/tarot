@@ -29,7 +29,7 @@
 
 <div class="shell">
 	<header>
-		<a class="brand" href="/">✶ Arcana</a>
+		<a class="brand" href="/">⚔ Ten of Swords Tarot</a>
 		<nav>
 			{#each links as link (link.href)}
 				<a href={link.href} class:active={isActive(link.href)}>{link.label}</a>

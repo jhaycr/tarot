@@ -5,9 +5,9 @@ import { build, files, version } from '$service-worker';
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
-const APP_CACHE = `arcana-app-${version}`;
-const CARD_CACHE = 'arcana-cards';
-const RUNTIME_CACHE = 'arcana-runtime';
+const APP_CACHE = `tenswords-app-${version}`;
+const CARD_CACHE = 'tenswords-cards';
+const RUNTIME_CACHE = 'tenswords-runtime';
 const ASSETS = [...build, ...files];
 
 sw.addEventListener('install', (event) => {
@@ -26,7 +26,7 @@ sw.addEventListener('activate', (event) => {
 			.then((keys) =>
 				Promise.all(
 					keys
-						.filter((k) => k.startsWith('arcana-app-') && k !== APP_CACHE)
+						.filter((k) => k.startsWith('tenswords-app-') && k !== APP_CACHE)
 						.map((k) => caches.delete(k))
 				)
 			)
