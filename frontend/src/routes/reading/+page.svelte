@@ -1,18 +1,24 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { api, type DeckSummary, type DrawnCard } from '$lib/api';
+	import { api, cardMeta, type Card as CardType, type DeckSummary, type DrawnCard } from '$lib/api';
 	import Card from '$lib/Card.svelte';
 	import { readingStore } from '$lib/reading.svelte';
 
 	const reading = readingStore.current;
 
 	let decks = $state<DeckSummary[]>([]);
+	let meta = $state<CardType[]>([]);
 	let flips = $state<boolean[]>(reading ? reading.cards.map(() => false) : []);
 	let selected = $state<number | null>(null);
+	let savedId = $state<number | null>(null);
+	let saving = $state(false);
 
 	$effect(() => {
 		if (!reading) goto('/');
-		else api.decks().then((d) => (decks = d));
+		else {
+			api.decks().then((d) => (decks = d));
+			cardMeta().then((c) => (meta = c));
+		}
 	});
 
 	const deckInfo = $derived(decks.find((d) => d.slug === reading?.deck));
@@ -26,8 +32,25 @@
 			.filter(({ drawn }) => drawn.position.col === col && drawn.position.row === row);
 	}
 
+	function meaning(drawn: DrawnCard): string | null {
+		const m = meta.find((c) => c.index === drawn.card.index);
+		if (!m) return null;
+		return (drawn.reversed ? m.reversed_meaning : m.upright) ?? null;
+	}
+
 	function revealAll() {
 		flips = flips.map(() => true);
+	}
+
+	async function save() {
+		if (!reading || savedId) return;
+		saving = true;
+		try {
+			const saved = await api.saveReading(reading);
+			savedId = saved.id;
+		} finally {
+			saving = false;
+		}
 	}
 </script>
 
@@ -41,6 +64,10 @@
 			<div class="actions">
 				{#if !allFlipped}
 					<button onclick={revealAll}>Reveal all</button>
+				{:else if savedId}
+					<a class="saved" href="/journal/{savedId}">Saved ✓</a>
+				{:else}
+					<button onclick={save} disabled={saving}>{saving ? 'Saving…' : 'Save to journal'}</button>
 				{/if}
 				<button onclick={() => { readingStore.set(null); goto('/'); }}>New reading</button>
 			</div>
@@ -86,9 +113,10 @@
 					{drawn.card.name}
 					{#if drawn.reversed}<span class="rev">reversed</span>{/if}
 				</h2>
-				<p class="dim">
-					{drawn.position.name} — {drawn.position.meaning}
-				</p>
+				<p class="dim">{drawn.position.name} — {drawn.position.meaning}</p>
+				{#if meaning(drawn)}
+					<p class="meaning">{meaning(drawn)}</p>
+				{/if}
 			</aside>
 		{/if}
 	</section>
@@ -111,6 +139,11 @@
 	.actions {
 		display: flex;
 		gap: 0.6rem;
+		align-items: center;
+	}
+
+	.saved {
+		color: var(--gold);
 	}
 
 	.table {
@@ -158,6 +191,10 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		padding: 1.2rem 1.5rem;
+	}
+
+	.meaning {
+		color: var(--gold-bright);
 	}
 
 	.rev {

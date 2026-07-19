@@ -134,6 +134,7 @@ def main() -> None:
     parser.add_argument("--slug", help="deck folder name (default: derived from source)")
     parser.add_argument("--name", help="display name (default: derived from slug)")
     parser.add_argument("--dest", type=Path, default=None, help=f"decks root (default: {user_decks_dir()})")
+    parser.add_argument("--user", help="download into this user's private deck collection")
     parser.add_argument("--delay", type=float, default=0.5, help="seconds between requests (default 0.5)")
     parser.add_argument("--force", action="store_true", help="re-download existing cards")
     parser.add_argument("--max-width", type=int, default=None, help="downscale images wider than this many pixels")
@@ -142,7 +143,7 @@ def main() -> None:
     try:
         download_deck(
             args.source,
-            args.dest or user_decks_dir(),
+            args.dest or user_decks_dir(args.user),
             slug=args.slug,
             name=args.name,
             delay=args.delay,

@@ -5,6 +5,8 @@ export interface Card {
 	suit: string | null;
 	rank: string | null;
 	number: number | null;
+	upright?: string | null;
+	reversed_meaning?: string | null;
 }
 
 export interface DeckSummary {
@@ -16,6 +18,9 @@ export interface DeckSummary {
 	count: number;
 	complete: boolean;
 	has_back: boolean;
+	owner: string | null;
+	shared: boolean;
+	yours: boolean;
 }
 
 export interface SpreadPosition {
@@ -46,25 +51,52 @@ export interface Reading {
 	cards: DrawnCard[];
 }
 
+export interface SavedReading extends Reading {
+	id: number;
+	owner: string;
+	created_at: number;
+	notes: string;
+	shared: boolean;
+	yours: boolean;
+}
+
 async function get<T>(url: string): Promise<T> {
 	const res = await fetch(url);
 	if (!res.ok) throw new Error(`${url}: ${res.status}`);
 	return res.json();
 }
 
+async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
+	const res = await fetch(url, {
+		method,
+		headers: { 'content-type': 'application/json' },
+		body: body === undefined ? undefined : JSON.stringify(body)
+	});
+	if (!res.ok) throw new Error(`${method} ${url}: ${res.status}`);
+	return res.json();
+}
+
 export const api = {
+	me: () => get<{ user: string }>('/api/me'),
 	cards: () => get<Card[]>('/api/cards'),
 	decks: () => get<DeckSummary[]>('/api/decks'),
 	spreads: () => get<Spread[]>('/api/spreads'),
-	draw: async (deck: string, spread: string, reversals: boolean, question?: string): Promise<Reading> => {
-		const res = await fetch('/api/draw', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ deck, spread, reversals, question: question || null })
-		});
-		if (!res.ok) throw new Error(`draw failed: ${res.status}`);
-		return res.json();
-	},
+	draw: (deck: string, spread: string, reversals: boolean, question?: string) =>
+		send<Reading>('POST', '/api/draw', { deck, spread, reversals, question: question || null }),
+	shareDeck: (slug: string, shared: boolean) =>
+		send<{ slug: string; shared: boolean }>('POST', `/api/decks/${slug}/share`, { shared }),
+	readings: () => get<SavedReading[]>('/api/readings'),
+	reading: (id: number) => get<SavedReading>(`/api/readings/${id}`),
+	saveReading: (r: Reading) => send<SavedReading>('POST', '/api/readings', r),
+	updateReading: (id: number, patch: { notes?: string; shared?: boolean }) =>
+		send<SavedReading>('PATCH', `/api/readings/${id}`, patch),
+	deleteReading: (id: number) => send<{ deleted: number }>('DELETE', `/api/readings/${id}`),
 	cardImage: (deck: string, index: number) => `/api/decks/${deck}/cards/${index}`,
 	backImage: (deck: string) => `/api/decks/${deck}/back`
 };
+
+let cardsCache: Card[] | null = null;
+export async function cardMeta(): Promise<Card[]> {
+	if (!cardsCache) cardsCache = await api.cards();
+	return cardsCache;
+}

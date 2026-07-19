@@ -5,11 +5,20 @@
 	let loaded = $state(false);
 
 	$effect(() => {
-		api.decks().then((d) => {
-			decks = d;
-			loaded = true;
-		});
+		refresh();
 	});
+
+	async function refresh() {
+		decks = await api.decks();
+		loaded = true;
+	}
+
+	async function toggleShare(deck: DeckSummary, e: Event) {
+		e.preventDefault();
+		e.stopPropagation();
+		await api.shareDeck(deck.slug, !deck.shared);
+		await refresh();
+	}
 </script>
 
 <h1>Decks</h1>
@@ -27,7 +36,15 @@
 		<a class="deck" href="/decks/{deck.slug}">
 			<img src={api.cardImage(deck.slug, 0)} alt="{deck.name} — The Fool" loading="lazy" />
 			<strong>{deck.name}</strong>
-			<small>{deck.complete ? '78 cards' : `${deck.count}/78 cards`}</small>
+			<small>
+				{deck.complete ? '78 cards' : `${deck.count}/78 cards`}
+				{#if deck.owner && !deck.yours}· <span class="badge">{deck.owner}</span>{/if}
+			</small>
+			{#if deck.yours}
+				<button class="share" onclick={(e) => toggleShare(deck, e)}>
+					{deck.shared ? 'Shared ✓ (click to unshare)' : 'Share with instance'}
+				</button>
+			{/if}
 		</a>
 	{/each}
 </div>
@@ -61,6 +78,16 @@
 
 	.deck small {
 		color: var(--text-dim);
+	}
+
+	.badge {
+		color: var(--accent);
+	}
+
+	.share {
+		font-size: 0.75rem;
+		padding: 0.3rem 0.6rem;
+		margin-top: 0.2rem;
 	}
 
 	code {

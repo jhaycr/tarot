@@ -1,25 +1,35 @@
+import json
 import os
 import secrets
 from dataclasses import asdict
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from tarot import db
+from tarot.auth import current_user
 from tarot.cards import CARDS
-from tarot.decks import discover_decks
+from tarot.decks import discover_decks, set_deck_shared
 from tarot.spreads import SPREADS, SPREADS_BY_SLUG
 
 app = FastAPI(title="tarot", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
 IMAGE_CACHE = {"Cache-Control": "public, max-age=604800"}
 
+MEANINGS: dict[str, dict] = json.loads(
+    (Path(__file__).parent.parent / "data" / "meanings.json").read_text()
+)
 
-def get_deck_or_404(slug: str):
-    deck = discover_decks().get(slug)
+User = Annotated[str, Depends(current_user)]
+
+
+def get_deck_or_404(slug: str, user: str):
+    deck = discover_decks(user).get(slug)
     if not deck:
         raise HTTPException(404, f"deck '{slug}' not found")
     return deck
@@ -30,13 +40,22 @@ def health():
     return {"ok": True}
 
 
+@app.get("/api/me")
+def me(user: User):
+    return {"user": user}
+
+
 @app.get("/api/cards")
 def list_cards():
-    return [asdict(c) for c in CARDS]
+    out = []
+    for c in CARDS:
+        m = MEANINGS.get(str(c.index), {})
+        out.append({**asdict(c), "upright": m.get("upright"), "reversed_meaning": m.get("reversed")})
+    return out
 
 
 @app.get("/api/decks")
-def list_decks():
+def list_decks(user: User):
     return [
         {
             "slug": d.slug,
@@ -47,14 +66,17 @@ def list_decks():
             "count": len(d.cards),
             "complete": d.complete,
             "has_back": d.back is not None,
+            "owner": d.owner,
+            "shared": d.shared,
+            "yours": d.owner == user,
         }
-        for d in discover_decks().values()
+        for d in discover_decks(user).values()
     ]
 
 
 @app.get("/api/decks/{slug}/cards/{index}")
-def card_image(slug: str, index: int):
-    deck = get_deck_or_404(slug)
+def card_image(slug: str, index: int, user: User):
+    deck = get_deck_or_404(slug, user)
     path = deck.cards.get(index)
     if not path:
         raise HTTPException(404, f"card {index} missing from deck '{slug}'")
@@ -62,11 +84,24 @@ def card_image(slug: str, index: int):
 
 
 @app.get("/api/decks/{slug}/back")
-def back_image(slug: str):
-    deck = get_deck_or_404(slug)
+def back_image(slug: str, user: User):
+    deck = get_deck_or_404(slug, user)
     if not deck.back:
         raise HTTPException(404, f"deck '{slug}' has no back image")
     return FileResponse(deck.back, headers=IMAGE_CACHE)
+
+
+class ShareRequest(BaseModel):
+    shared: bool
+
+
+@app.post("/api/decks/{slug}/share")
+def share_deck(slug: str, req: ShareRequest, user: User):
+    deck = get_deck_or_404(slug, user)
+    if deck.owner != user:
+        raise HTTPException(403, "only the deck's owner can change sharing")
+    set_deck_shared(deck, req.shared)
+    return {"slug": slug, "shared": req.shared}
 
 
 @app.get("/api/spreads")
@@ -82,8 +117,8 @@ class DrawRequest(BaseModel):
 
 
 @app.post("/api/draw")
-def draw(req: DrawRequest):
-    deck = get_deck_or_404(req.deck)
+def draw(req: DrawRequest, user: User):
+    get_deck_or_404(req.deck, user)
     spread = SPREADS_BY_SLUG.get(req.spread)
     if not spread:
         raise HTTPException(404, f"spread '{req.spread}' not found")
@@ -99,6 +134,51 @@ def draw(req: DrawRequest):
         for pos, i in zip(spread["positions"], indices)
     ]
     return {"deck": req.deck, "spread": req.spread, "question": req.question, "cards": drawn}
+
+
+class SaveReadingRequest(BaseModel):
+    deck: str
+    spread: str
+    question: str | None = None
+    cards: list[dict]
+
+
+class UpdateReadingRequest(BaseModel):
+    notes: str | None = None
+    shared: bool | None = None
+
+
+@app.get("/api/readings")
+def readings_list(user: User):
+    return [{**r, "yours": r["owner"] == user} for r in db.list_readings(user)]
+
+
+@app.post("/api/readings")
+def readings_save(req: SaveReadingRequest, user: User):
+    return db.save_reading(user, req.question, req.deck, req.spread, req.cards)
+
+
+@app.get("/api/readings/{reading_id}")
+def readings_get(reading_id: int, user: User):
+    r = db.get_reading(reading_id, user)
+    if not r:
+        raise HTTPException(404, "reading not found")
+    return {**r, "yours": r["owner"] == user}
+
+
+@app.patch("/api/readings/{reading_id}")
+def readings_update(reading_id: int, req: UpdateReadingRequest, user: User):
+    r = db.update_reading(reading_id, user, notes=req.notes, shared=req.shared)
+    if not r:
+        raise HTTPException(404, "reading not found or not yours")
+    return {**r, "yours": True}
+
+
+@app.delete("/api/readings/{reading_id}")
+def readings_delete(reading_id: int, user: User):
+    if not db.delete_reading(reading_id, user):
+        raise HTTPException(404, "reading not found or not yours")
+    return {"deleted": reading_id}
 
 
 class SpaStaticFiles(StaticFiles):

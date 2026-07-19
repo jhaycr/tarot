@@ -3,7 +3,14 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { page } from '$app/state';
 
+	import { api } from '$lib/api';
+
 	let { children } = $props();
+
+	let user = $state('');
+	$effect(() => {
+		api.me().then((m) => (user = m.user));
+	});
 
 	const links = [
 		{ href: '/', label: 'Reading' },
@@ -28,6 +35,9 @@
 				<a href={link.href} class:active={isActive(link.href)}>{link.label}</a>
 			{/each}
 		</nav>
+		{#if user && user !== 'local'}
+			<span class="user">{user}</span>
+		{/if}
 	</header>
 	<main>
 		{@render children()}
@@ -69,6 +79,12 @@
 	nav a.active {
 		color: var(--gold);
 		border-bottom: 1px solid var(--gold);
+	}
+
+	.user {
+		margin-left: auto;
+		color: var(--text-dim);
+		font-size: 0.85rem;
 	}
 
 	@media (max-width: 480px) {

@@ -1,4 +1,11 @@
-"""Deck discovery: scan deck directories for manifest.yaml + cards/NN.<ext>."""
+"""Deck discovery: scan deck directories for manifest.yaml + cards/NN.<ext>.
+
+Deck locations and visibility:
+- builtin decks (shipped in the image)          -> everyone
+- instance decks  ($TAROT_DATA_DIR/decks)       -> everyone
+- user decks      ($TAROT_DATA_DIR/users/<u>/decks)
+    -> their owner always; others only when the manifest has `shared: true`
+"""
 
 import os
 from dataclasses import dataclass, field
@@ -18,8 +25,10 @@ def data_dir() -> Path:
     return Path(os.environ.get("TAROT_DATA_DIR", Path(__file__).parent.parent.parent / "data"))
 
 
-def user_decks_dir() -> Path:
-    return data_dir() / "decks"
+def user_decks_dir(user: str | None = None) -> Path:
+    if user is None:
+        return data_dir() / "decks"
+    return data_dir() / "users" / user / "decks"
 
 
 @dataclass
@@ -30,6 +39,8 @@ class Deck:
     source: str | None = None
     attribution: str | None = None
     license: str | None = None
+    owner: str | None = None  # None = builtin/instance deck, visible to all
+    shared: bool = False
     cards: dict[int, Path] = field(default_factory=dict)
     back: Path | None = None
 
@@ -38,7 +49,7 @@ class Deck:
         return len(self.cards) == 78
 
 
-def _load_deck(deck_path: Path) -> Deck | None:
+def _load_deck(deck_path: Path, owner: str | None = None) -> Deck | None:
     manifest_path = deck_path / "manifest.yaml"
     if not manifest_path.is_file():
         return None
@@ -50,6 +61,8 @@ def _load_deck(deck_path: Path) -> Deck | None:
         source=manifest.get("source"),
         attribution=manifest.get("attribution"),
         license=manifest.get("license"),
+        owner=owner,
+        shared=bool(manifest.get("shared")),
     )
     cards_dir = deck_path / "cards"
     if cards_dir.is_dir():
@@ -71,16 +84,47 @@ def _load_deck(deck_path: Path) -> Deck | None:
     return deck
 
 
-def discover_decks() -> dict[str, Deck]:
-    """User decks shadow builtin decks with the same slug."""
-    decks: dict[str, Deck] = {}
-    for root in (builtin_decks_dir(), user_decks_dir()):
-        if not root.is_dir():
-            continue
-        for deck_path in sorted(root.iterdir()):
-            if not deck_path.is_dir():
-                continue
-            deck = _load_deck(deck_path)
+def _scan(root: Path, owner: str | None = None) -> list[Deck]:
+    if not root.is_dir():
+        return []
+    decks = []
+    for deck_path in sorted(root.iterdir()):
+        if deck_path.is_dir():
+            deck = _load_deck(deck_path, owner=owner)
             if deck and deck.cards:
-                decks[deck.slug] = deck
+                decks.append(deck)
     return decks
+
+
+def all_users() -> list[str]:
+    users_root = data_dir() / "users"
+    if not users_root.is_dir():
+        return []
+    return sorted(p.name for p in users_root.iterdir() if p.is_dir())
+
+
+def discover_decks(user: str | None = None) -> dict[str, Deck]:
+    """Decks visible to `user` (or only the public pool when user is None).
+
+    Later sources win on slug collision; a user's own deck always wins last.
+    """
+    decks: dict[str, Deck] = {}
+    for deck in _scan(builtin_decks_dir()) + _scan(user_decks_dir(None)):
+        decks[deck.slug] = deck
+    if user is not None:
+        for other in all_users():
+            if other == user:
+                continue
+            for deck in _scan(user_decks_dir(other), owner=other):
+                if deck.shared:
+                    decks[deck.slug] = deck
+        for deck in _scan(user_decks_dir(user), owner=user):
+            decks[deck.slug] = deck
+    return decks
+
+
+def set_deck_shared(deck: Deck, shared: bool) -> None:
+    manifest_path = deck.path / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text()) or {}
+    manifest["shared"] = shared
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True))
