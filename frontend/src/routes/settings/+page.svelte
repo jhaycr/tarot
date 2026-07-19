@@ -69,11 +69,13 @@
 	<section>
 		<h2>AI connection <small class="dim">(admin)</small></h2>
 		<p class="dim">
-			Any OpenAI-compatible endpoint: OpenRouter (<code>https://openrouter.ai/api/v1</code>,
-			model e.g. <code>minimax/minimax-m2</code>), OpenAI (<code>https://api.openai.com/v1</code>),
-			Anthropic (<code>https://api.anthropic.com/v1</code>), or local Ollama
-			(<code>http://ollama:11434/v1</code>). The API key is encrypted at rest and never
-			shown again after saving.
+			Any OpenAI-compatible endpoint. Examples — OpenRouter:
+			<code>https://openrouter.ai/api/v1</code> with model <code>minimax/minimax-m2</code>;
+			Anthropic: <code>https://api.anthropic.com/v1</code> with model
+			<code>claude-haiku-4-5</code>; OpenAI: <code>https://api.openai.com/v1</code> with
+			model <code>gpt-4o-mini</code>; local Ollama: <code>http://ollama:11434/v1</code> with
+			model <code>llama3.1</code>. The API key is encrypted at rest and never shown again
+			after saving.
 		</p>
 		<label class="fld">
 			<span>Base URL</span>
