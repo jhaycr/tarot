@@ -28,7 +28,13 @@
 	class:cross
 	class:next={next && !flipped}
 	class:reversed={drawn.reversed}
-	onclick={() => (flipped = true)}
+	onclick={(e) => {
+		if (!flipped) {
+			// a flip is just a flip — don't let it bubble into selection handlers
+			e.stopPropagation();
+			flipped = true;
+		}
+	}}
 	aria-label={flipped ? drawn.card.name : `Reveal ${drawn.position.name}`}
 >
 	<div class="inner">

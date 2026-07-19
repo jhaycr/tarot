@@ -257,6 +257,14 @@
 		position: absolute;
 		inset: 0 0 auto 0;
 		z-index: 2;
+		/* only the rotated card itself catches clicks — the base card under the
+		   cross stays reachable at its top and bottom */
+		pointer-events: none;
+	}
+
+	.slot.overlay :global(.card),
+	.slot.overlay .popover {
+		pointer-events: auto;
 	}
 
 	.slot.overlay .pos {
