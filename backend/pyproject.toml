@@ -1,7 +1,8 @@
 [project]
 name = "tarot"
 version = "0.1.0"
-description = "Self-hosted tarot webapp: multi-deck reader, journal, and deck downloader"
+description = "Tarotarium: self-hosted tarot — multi-deck reader, journal, and deck downloader"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
