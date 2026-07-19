@@ -7,6 +7,9 @@ export interface Card {
 	number: number | null;
 	upright?: string | null;
 	reversed_meaning?: string | null;
+	description?: string | null;
+	pkt_upright?: string | null;
+	pkt_reversed?: string | null;
 }
 
 export interface DeckSummary {
@@ -17,6 +20,7 @@ export interface DeckSummary {
 	license: string | null;
 	count: number;
 	complete: boolean;
+	majors_only: boolean;
 	has_back: boolean;
 	owner: string | null;
 	shared: boolean;
@@ -83,7 +87,25 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
 }
 
 export const api = {
-	me: () => get<{ user: string; interpretation: boolean }>('/api/me'),
+	me: () => get<{ user: string; interpretation: boolean; is_admin: boolean }>('/api/me'),
+	uploadDeck: async (file: File, name: string) => {
+		const form = new FormData();
+		form.append('file', file);
+		form.append('name', name);
+		const res = await fetch('/api/decks/upload', { method: 'POST', body: form });
+		if (!res.ok) throw new Error((await res.json()).detail ?? `upload failed: ${res.status}`);
+		return res.json() as Promise<{ slug: string; count: number; majors_only: boolean }>;
+	},
+	getLlmSettings: () =>
+		get<{ base_url: string; model: string; api_key_set: boolean; from_env: boolean }>(
+			'/api/settings/llm'
+		),
+	setLlmSettings: (s: { base_url?: string; model?: string; api_key?: string }) =>
+		send<{ base_url: string; model: string; api_key_set: boolean; from_env: boolean }>(
+			'PUT',
+			'/api/settings/llm',
+			s
+		),
 	interpret: (question: string | null, spread: string, cards: DrawnCard[], persona?: string) =>
 		send<{ interpretation: string }>('POST', '/api/interpret', {
 			question,

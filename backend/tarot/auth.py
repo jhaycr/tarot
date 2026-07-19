@@ -14,6 +14,18 @@ from fastapi import Request
 AUTH_HEADER = os.environ.get("TAROT_AUTH_HEADER", "x-authentik-username")
 FALLBACK_USER = os.environ.get("TAROT_FALLBACK_USER", "local")
 
+# Users allowed to manage instance settings (LLM connection). Defaults to the
+# fallback user so single-user LAN mode is admin out of the box.
+ADMIN_USERS = {
+    u.strip().lower()
+    for u in os.environ.get("TAROT_ADMIN_USERS", FALLBACK_USER).split(",")
+    if u.strip()
+}
+
+
+def is_admin(user: str) -> bool:
+    return user in ADMIN_USERS
+
 _SAFE = re.compile(r"[^a-z0-9._-]")
 
 

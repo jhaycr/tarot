@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api, cardMeta, type Card as CardType, type DrawnCard, type SavedReading } from '$lib/api';
+	import { api, cardMeta, type Card as CardType, type SavedReading } from '$lib/api';
+	import CardDetail from '$lib/CardDetail.svelte';
 
 	const id = $derived(Number(page.params.id));
 
@@ -20,11 +21,6 @@
 			.catch(() => goto('/journal'));
 		cardMeta().then((c) => (meta = c));
 	});
-
-	function meaning(drawn: DrawnCard): string | null {
-		const m = meta.find((c) => c.index === drawn.card.index);
-		return (drawn.reversed ? m?.reversed_meaning : m?.upright) ?? null;
-	}
 
 	async function saveNotes() {
 		if (!reading) return;
@@ -84,15 +80,7 @@
 	</div>
 
 	{#if selected !== null}
-		{@const drawn = reading.cards[selected]}
-		<aside class="detail">
-			<h2>
-				{drawn.card.name}
-				{#if drawn.reversed}<span class="rev">reversed</span>{/if}
-			</h2>
-			<p class="dim">{drawn.position.name} — {drawn.position.meaning}</p>
-			{#if meaning(drawn)}<p class="meaning">{meaning(drawn)}</p>{/if}
-		</aside>
+		<CardDetail drawn={reading.cards[selected]} {meta} />
 	{/if}
 
 	{#if reading.yours}
@@ -174,26 +162,6 @@
 
 	.pos {
 		color: var(--text-dim);
-	}
-
-	.detail {
-		margin-top: 1.5rem;
-		background: var(--bg-raised);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: 1.2rem 1.5rem;
-	}
-
-	.meaning {
-		color: var(--gold-bright);
-	}
-
-	.rev {
-		font-size: 0.8rem;
-		color: var(--danger);
-		margin-left: 0.5rem;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
 	}
 
 	.notes {

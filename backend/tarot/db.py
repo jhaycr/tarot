@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS user_prompts (
     owner TEXT PRIMARY KEY,
     system_prompt TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -117,6 +121,24 @@ def set_user_prompt(owner: str, system_prompt: str) -> None:
             )
         else:
             con.execute("DELETE FROM user_prompts WHERE owner = ?", (owner,))
+
+
+def get_setting(key: str) -> str:
+    with connect() as con:
+        row = con.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else ""
+
+
+def set_setting(key: str, value: str) -> None:
+    with connect() as con:
+        if value:
+            con.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+        else:
+            con.execute("DELETE FROM app_settings WHERE key = ?", (key,))
 
 
 def delete_reading(reading_id: int, owner: str) -> bool:

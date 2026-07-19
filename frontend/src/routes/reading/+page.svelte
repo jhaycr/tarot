@@ -3,6 +3,7 @@
 	import { api, cardMeta, type Card as CardType, type DeckSummary, type DrawnCard, type Persona } from '$lib/api';
 	import { prefPersona } from '$lib/prefs.svelte';
 	import Card from '$lib/Card.svelte';
+	import CardDetail from '$lib/CardDetail.svelte';
 	import { readingStore } from '$lib/reading.svelte';
 
 	const reading = readingStore.current;
@@ -48,12 +49,6 @@
 		return (reading?.cards ?? [])
 			.map((drawn, i) => ({ drawn, i }))
 			.filter(({ drawn }) => drawn.position.col === col && drawn.position.row === row);
-	}
-
-	function meaning(drawn: DrawnCard): string | null {
-		const m = meta.find((c) => c.index === drawn.card.index);
-		if (!m) return null;
-		return (drawn.reversed ? m.reversed_meaning : m.upright) ?? null;
 	}
 
 	function revealAll() {
@@ -140,17 +135,7 @@
 		</div>
 
 		{#if selected !== null && flips[selected]}
-			{@const drawn = reading.cards[selected]}
-			<aside class="detail">
-				<h2>
-					{drawn.card.name}
-					{#if drawn.reversed}<span class="rev">reversed</span>{/if}
-				</h2>
-				<p class="dim">{drawn.position.name} — {drawn.position.meaning}</p>
-				{#if meaning(drawn)}
-					<p class="meaning">{meaning(drawn)}</p>
-				{/if}
-			</aside>
+			<CardDetail drawn={reading.cards[selected]} {meta} />
 		{/if}
 
 		{#if llmEnabled && allFlipped}
@@ -239,27 +224,6 @@
 		font-size: 0.8rem;
 		color: var(--text-dim);
 		text-align: center;
-	}
-
-	.detail {
-		margin: 2rem auto 0;
-		max-width: 40rem;
-		background: var(--bg-raised);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: 1.2rem 1.5rem;
-	}
-
-	.meaning {
-		color: var(--gold-bright);
-	}
-
-	.rev {
-		font-size: 0.8rem;
-		color: var(--danger);
-		margin-left: 0.5rem;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
 	}
 
 	.dim {

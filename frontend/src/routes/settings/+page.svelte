@@ -6,12 +6,50 @@
 	let saved = $state(true);
 	let expanded = $state<string | null>(null);
 
+	let isAdmin = $state(false);
+	let llmBaseUrl = $state('');
+	let llmModel = $state('');
+	let llmApiKey = $state('');
+	let llmKeySet = $state(false);
+	let llmFromEnv = $state(false);
+	let llmSaved = $state(true);
+	let llmError = $state('');
+
 	$effect(() => {
 		api.getPrompt().then((r) => {
 			prompt = r.prompt;
 			personas = r.personas;
 		});
+		api.me().then((m) => {
+			isAdmin = m.is_admin;
+			if (m.is_admin) refreshLlm();
+		});
 	});
+
+	async function refreshLlm() {
+		const s = await api.getLlmSettings();
+		llmBaseUrl = s.base_url;
+		llmModel = s.model;
+		llmKeySet = s.api_key_set;
+		llmFromEnv = s.from_env;
+	}
+
+	async function saveLlm() {
+		llmError = '';
+		try {
+			const s = await api.setLlmSettings({
+				base_url: llmBaseUrl,
+				model: llmModel,
+				...(llmApiKey ? { api_key: llmApiKey } : {})
+			});
+			llmApiKey = '';
+			llmKeySet = s.api_key_set;
+			llmFromEnv = s.from_env;
+			llmSaved = true;
+		} catch (e) {
+			llmError = String(e);
+		}
+	}
 
 	async function save() {
 		const r = await api.setPrompt(prompt);
@@ -26,6 +64,34 @@
 </script>
 
 <h1>Settings</h1>
+
+{#if isAdmin}
+	<section>
+		<h2>AI connection <small class="dim">(admin)</small></h2>
+		<p class="dim">
+			Any OpenAI-compatible endpoint: OpenRouter (<code>https://openrouter.ai/api/v1</code>,
+			model e.g. <code>minimax/minimax-m2</code>), OpenAI (<code>https://api.openai.com/v1</code>),
+			Anthropic (<code>https://api.anthropic.com/v1</code>), or local Ollama
+			(<code>http://ollama:11434/v1</code>). The API key is encrypted at rest and never
+			shown again after saving.
+		</p>
+		<label class="fld">
+			<span>Base URL</span>
+			<input type="text" bind:value={llmBaseUrl} oninput={() => (llmSaved = false)} placeholder="https://openrouter.ai/api/v1" />
+		</label>
+		<label class="fld">
+			<span>Model</span>
+			<input type="text" bind:value={llmModel} oninput={() => (llmSaved = false)} placeholder="minimax/minimax-m2" />
+		</label>
+		<label class="fld">
+			<span>API key {#if llmKeySet}<em class="dim">(saved — leave blank to keep)</em>{/if}</span>
+			<input type="password" bind:value={llmApiKey} oninput={() => (llmSaved = false)} placeholder={llmKeySet ? '••••••••' : 'sk-…'} autocomplete="off" />
+		</label>
+		{#if llmFromEnv}<p class="dim">Currently configured from environment variables; saving here overrides them.</p>{/if}
+		{#if llmError}<p class="error">{llmError}</p>{/if}
+		<button onclick={saveLlm} disabled={llmSaved}>{llmSaved ? 'Saved' : 'Save connection'}</button>
+	</section>
+{/if}
 
 <section>
 	<h2>Custom reader persona</h2>
@@ -101,5 +167,26 @@
 
 	.dim {
 		color: var(--text-dim);
+	}
+
+	.fld {
+		display: block;
+		margin-bottom: 0.8rem;
+	}
+
+	.fld > span {
+		display: block;
+		color: var(--text-dim);
+		margin-bottom: 0.25rem;
+	}
+
+	.error {
+		color: var(--danger);
+	}
+
+	code {
+		background: var(--bg-raised);
+		padding: 0.1rem 0.3rem;
+		border-radius: 4px;
 	}
 </style>

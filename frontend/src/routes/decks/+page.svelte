@@ -3,6 +3,10 @@
 
 	let decks = $state<DeckSummary[]>([]);
 	let loaded = $state(false);
+	let uploadName = $state('');
+	let uploadFile = $state<File | null>(null);
+	let uploading = $state(false);
+	let uploadError = $state('');
 
 	$effect(() => {
 		refresh();
@@ -19,17 +23,60 @@
 		await api.shareDeck(deck.slug, !deck.shared);
 		await refresh();
 	}
+
+	async function upload() {
+		if (!uploadFile || !uploadName.trim()) return;
+		uploading = true;
+		uploadError = '';
+		try {
+			await api.uploadDeck(uploadFile, uploadName.trim());
+			uploadName = '';
+			uploadFile = null;
+			await refresh();
+		} catch (e) {
+			uploadError = e instanceof Error ? e.message : String(e);
+		} finally {
+			uploading = false;
+		}
+	}
+
+	function deckLabel(deck: DeckSummary): string {
+		if (deck.complete) return '78 cards';
+		if (deck.majors_only) return '22 cards · majors only';
+		return `${deck.count}/78 cards`;
+	}
 </script>
 
 <h1>Decks</h1>
 
 {#if loaded && decks.length === 0}
 	<p>
-		No decks installed yet. On the server, run
-		<code>tarot-dl &lt;source-url&gt;</code> to download a deck into the decks folder,
-		then reload this page.
+		No decks installed yet. Upload one below, or run
+		<code>tarot-dl &lt;source-url&gt;</code> on the server.
 	</p>
 {/if}
+
+<section class="upload">
+	<h2>Upload a deck</h2>
+	<p class="dim">
+		Zip of card images: 78 for a full deck, 22 for majors-only — or number the
+		files <code>00</code>–<code>77</code> to map them explicitly (majors 0–21, then
+		wands, cups, swords, pentacles: ace, 2–10, page, knight, queen, king). Include
+		<code>back.jpg</code> for a card back. Goes into your personal collection.
+	</p>
+	<div class="row">
+		<input type="text" placeholder="Deck name" bind:value={uploadName} />
+		<input
+			type="file"
+			accept=".zip"
+			onchange={(e) => (uploadFile = e.currentTarget.files?.[0] ?? null)}
+		/>
+		<button onclick={upload} disabled={uploading || !uploadFile || !uploadName.trim()}>
+			{uploading ? 'Uploading…' : 'Upload'}
+		</button>
+	</div>
+	{#if uploadError}<p class="error">{uploadError}</p>{/if}
+</section>
 
 <div class="grid">
 	{#each decks as deck (deck.slug)}
@@ -37,7 +84,7 @@
 			<img src={api.cardImage(deck.slug, 0)} alt="{deck.name} — The Fool" loading="lazy" />
 			<strong>{deck.name}</strong>
 			<small>
-				{deck.complete ? '78 cards' : `${deck.count}/78 cards`}
+				{deckLabel(deck)}
 				{#if deck.owner && !deck.yours}· <span class="badge">{deck.owner}</span>{/if}
 			</small>
 			{#if deck.yours}
@@ -94,5 +141,39 @@
 		background: var(--bg-raised);
 		padding: 0.1rem 0.4rem;
 		border-radius: 4px;
+	}
+
+	.upload {
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 1rem 1.2rem;
+		margin-bottom: 1.6rem;
+	}
+
+	.upload h2 {
+		font-size: 1.05rem;
+	}
+
+	.upload .row {
+		display: flex;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+		align-items: center;
+	}
+
+	.upload input[type='text'] {
+		max-width: 16rem;
+	}
+
+	.upload input[type='file'] {
+		color: var(--text-dim);
+	}
+
+	.dim {
+		color: var(--text-dim);
+	}
+
+	.error {
+		color: var(--danger);
 	}
 </style>

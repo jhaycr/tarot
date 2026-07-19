@@ -48,6 +48,10 @@ class Deck:
     def complete(self) -> bool:
         return len(self.cards) == 78
 
+    @property
+    def majors_only(self) -> bool:
+        return len(self.cards) == 22 and all(i < 22 for i in self.cards)
+
 
 def _load_deck(deck_path: Path, owner: str | None = None) -> Deck | None:
     manifest_path = deck_path / "manifest.yaml"

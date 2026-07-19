@@ -60,9 +60,13 @@
 		<span>Spread</span>
 		<div class="choices">
 			{#each spreads as spread (spread.slug)}
+				{@const deckCount = decks.find((d) => d.slug === prefDeck.value)?.count ?? 78}
+				{@const tooBig = spread.positions.length > deckCount}
 				<button
 					class="choice"
 					class:selected={prefSpread.value === spread.slug}
+					disabled={tooBig}
+					title={tooBig ? 'This deck has too few cards for this spread' : undefined}
 					onclick={() => (prefSpread.value = spread.slug)}
 				>
 					<strong>{spread.name}</strong>
@@ -84,7 +88,8 @@
 					<img src={api.cardImage(deck.slug, 0)} alt="" loading="lazy" />
 					<span>
 						<strong>{deck.name}</strong>
-						{#if !deck.complete}<small class="warn">{deck.count}/78 cards</small>{/if}
+						{#if deck.majors_only}<small class="dim">majors only</small>
+						{:else if !deck.complete}<small class="warn">{deck.count}/78 cards</small>{/if}
 					</span>
 				</button>
 			{/each}

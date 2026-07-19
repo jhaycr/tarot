@@ -78,13 +78,18 @@ def default_prompt() -> str:
 
 
 def config() -> dict | None:
-    base_url = os.environ.get("TAROT_LLM_BASE_URL", "").rstrip("/")
+    """LLM connection: admin-saved settings (API key encrypted at rest) take
+    precedence over environment variables."""
+    from tarot import crypto, db
+
+    base_url = (db.get_setting("llm_base_url") or os.environ.get("TAROT_LLM_BASE_URL", "")).rstrip("/")
     if not base_url:
         return None
+    stored_key = db.get_setting("llm_api_key")
     return {
         "base_url": base_url,
-        "model": os.environ.get("TAROT_LLM_MODEL", ""),
-        "api_key": os.environ.get("TAROT_LLM_API_KEY", ""),
+        "model": db.get_setting("llm_model") or os.environ.get("TAROT_LLM_MODEL", ""),
+        "api_key": crypto.decrypt(stored_key) if stored_key else os.environ.get("TAROT_LLM_API_KEY", ""),
     }
 
 

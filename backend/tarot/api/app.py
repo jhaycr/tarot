@@ -1,22 +1,26 @@
+import io
 import json
 import os
+import re
 import secrets
+import zipfile
 
 import httpx
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+import yaml
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import db, interpret as interp
-from tarot.auth import current_user
+from tarot import crypto, db, interpret as interp
+from tarot.auth import current_user, is_admin
 from tarot.cards import CARDS
-from tarot.decks import discover_decks, set_deck_shared
+from tarot.decks import IMAGE_EXTS, discover_decks, set_deck_shared, user_decks_dir
 from tarot.spreads import SPREADS, SPREADS_BY_SLUG
 
 app = FastAPI(title="Tarotarium", docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -25,6 +29,11 @@ IMAGE_CACHE = {"Cache-Control": "public, max-age=604800"}
 
 MEANINGS: dict[str, dict] = json.loads(
     (Path(__file__).parent.parent / "data" / "meanings.json").read_text()
+)
+
+# A. E. Waite, The Pictorial Key to the Tarot (1911), public domain.
+PKT: dict[str, dict] = json.loads(
+    (Path(__file__).parent.parent / "data" / "pkt.json").read_text()
 )
 
 User = Annotated[str, Depends(current_user)]
@@ -44,7 +53,11 @@ def health():
 
 @app.get("/api/me")
 def me(user: User):
-    return {"user": user, "interpretation": interp.config() is not None}
+    return {
+        "user": user,
+        "interpretation": interp.config() is not None,
+        "is_admin": is_admin(user),
+    }
 
 
 @app.get("/api/cards")
@@ -52,7 +65,15 @@ def list_cards():
     out = []
     for c in CARDS:
         m = MEANINGS.get(str(c.index), {})
-        out.append({**asdict(c), "upright": m.get("upright"), "reversed_meaning": m.get("reversed")})
+        p = PKT.get(str(c.index), {})
+        out.append({
+            **asdict(c),
+            "upright": m.get("upright"),
+            "reversed_meaning": m.get("reversed"),
+            "description": p.get("description"),
+            "pkt_upright": p.get("upright"),
+            "pkt_reversed": p.get("reversed"),
+        })
     return out
 
 
@@ -67,6 +88,7 @@ def list_decks(user: User):
             "license": d.license,
             "count": len(d.cards),
             "complete": d.complete,
+            "majors_only": d.majors_only,
             "has_back": d.back is not None,
             "owner": d.owner,
             "shared": d.shared,
@@ -106,6 +128,67 @@ def share_deck(slug: str, req: ShareRequest, user: User):
     return {"slug": slug, "shared": req.shared}
 
 
+MAX_UPLOAD_BYTES = 300 * 1024 * 1024
+
+
+@app.post("/api/decks/upload")
+def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...), slug: str = Form("")):
+    slug = re.sub(r"[^a-z0-9-]", "-", (slug or name).lower()).strip("-")
+    if not slug:
+        raise HTTPException(400, "deck needs a name")
+    dest = user_decks_dir(user) / slug
+    if dest.exists():
+        raise HTTPException(409, f"you already have a deck '{slug}'")
+
+    data = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "zip too large")
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "not a zip file")
+
+    images: list[tuple[str, str]] = []  # (basename-without-ext, entry-name)
+    back_entry: str | None = None
+    for entry in zf.namelist():
+        base = os.path.basename(entry)
+        stem, ext = os.path.splitext(base)
+        if not stem or base.startswith(".") or ext.lower() not in IMAGE_EXTS:
+            continue
+        if stem.lower() == "back":
+            back_entry = entry
+        else:
+            images.append((stem, entry))
+
+    # numbered filenames map directly; otherwise alphabetical order must yield
+    # a full 78-card deck or a 22-card majors-only deck
+    if images and all(s.isdigit() and 0 <= int(s) <= 77 for s, _ in images):
+        mapping = {int(s): e for s, e in images}
+        if len(mapping) != len(images):
+            raise HTTPException(400, "duplicate card numbers in zip")
+    elif len(images) in (78, 22):
+        mapping = {i: e for i, (_, e) in enumerate(sorted(images))}
+    else:
+        raise HTTPException(
+            400,
+            f"found {len(images)} images — upload 78 (full) or 22 (majors only), "
+            "or number the files 00-77 to map them explicitly",
+        )
+
+    cards_dir = dest / "cards"
+    cards_dir.mkdir(parents=True)
+    for index, entry in mapping.items():
+        ext = os.path.splitext(entry)[1].lower()
+        (cards_dir / f"{index:02d}{ext}").write_bytes(zf.read(entry))
+    if back_entry:
+        ext = os.path.splitext(back_entry)[1].lower()
+        (dest / f"back{ext}").write_bytes(zf.read(back_entry))
+    (dest / "manifest.yaml").write_text(
+        yaml.safe_dump({"name": name, "attribution": f"Uploaded by {user}"}, sort_keys=False, allow_unicode=True)
+    )
+    return {"slug": slug, "count": len(mapping), "majors_only": len(mapping) == 22}
+
+
 @app.get("/api/spreads")
 def list_spreads():
     return SPREADS
@@ -120,13 +203,20 @@ class DrawRequest(BaseModel):
 
 @app.post("/api/draw")
 def draw(req: DrawRequest, user: User):
-    get_deck_or_404(req.deck, user)
+    deck = get_deck_or_404(req.deck, user)
     spread = SPREADS_BY_SLUG.get(req.spread)
     if not spread:
         raise HTTPException(404, f"spread '{req.spread}' not found")
 
+    available = sorted(deck.cards.keys())
+    if len(available) < len(spread["positions"]):
+        raise HTTPException(
+            400,
+            f"deck '{req.deck}' has {len(available)} cards; "
+            f"the {spread['name']} spread needs {len(spread['positions'])}",
+        )
     rng = secrets.SystemRandom()
-    indices = rng.sample(range(78), len(spread["positions"]))
+    indices = rng.sample(available, len(spread["positions"]))
     drawn = [
         {
             "position": pos,
@@ -174,6 +264,40 @@ def list_personas(user: User):
         "has_custom": bool(db.get_user_prompt(user)),
         "default": interp.DEFAULT_PERSONA,
     }
+
+
+class LlmSettingsRequest(BaseModel):
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None  # write-only; empty string clears the stored key
+
+
+def require_admin(user: str) -> None:
+    if not is_admin(user):
+        raise HTTPException(403, "admin only")
+
+
+@app.get("/api/settings/llm")
+def get_llm_settings(user: User):
+    require_admin(user)
+    return {
+        "base_url": db.get_setting("llm_base_url") or os.environ.get("TAROT_LLM_BASE_URL", ""),
+        "model": db.get_setting("llm_model") or os.environ.get("TAROT_LLM_MODEL", ""),
+        "api_key_set": bool(db.get_setting("llm_api_key") or os.environ.get("TAROT_LLM_API_KEY")),
+        "from_env": not db.get_setting("llm_base_url") and bool(os.environ.get("TAROT_LLM_BASE_URL")),
+    }
+
+
+@app.put("/api/settings/llm")
+def set_llm_settings(req: LlmSettingsRequest, user: User):
+    require_admin(user)
+    if req.base_url is not None:
+        db.set_setting("llm_base_url", req.base_url.strip())
+    if req.model is not None:
+        db.set_setting("llm_model", req.model.strip())
+    if req.api_key is not None:
+        db.set_setting("llm_api_key", crypto.encrypt(req.api_key.strip()) if req.api_key.strip() else "")
+    return get_llm_settings(user)
 
 
 class PromptRequest(BaseModel):
