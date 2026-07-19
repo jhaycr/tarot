@@ -1,16 +1,18 @@
-"""tarot-dl: download a full 78-card deck into the decks folder.
+"""tarot-dl: download or import a deck into the decks folder.
 
 Examples:
-    tarot-dl rws
+    tarot-dl rws                      # or 'marseille' for the Dodal trumps
     tarot-dl https://elvitarot.com/decks/tarot/modern-witch-tarot
-    tarot-dl https://www.tarot.com/tarot/decks/8-bit
     tarot-dl 'https://example.com/deck/{n}.jpg' --slug my-deck --name 'My Deck'
+    tarot-dl ~/Pictures/Tarot/Stick --name 'Stick Figure Tarot'   # local folder import
 
+Local imports map filenames by card name/suit/rank (see tarot.importer).
 Downloaded decks are for personal use.
 """
 
 import argparse
 import io
+import re
 import sys
 import time
 from pathlib import Path
@@ -53,7 +55,7 @@ def download_deck(
     delay: float = 0.5,
     force: bool = False,
     max_width: int | None = None,
-    on_start=None,  # called once with (slug, name) after the source resolves
+    on_start=None,  # called once with (slug, name, total) after the source resolves
     on_card=None,  # called after each card with (index, ok)
 ) -> Path:
     client = httpx.Client(
@@ -73,14 +75,17 @@ def download_deck(
     cards_dir = deck_dir / "cards"
     cards_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"deck: {name} ({slug})")
+    total = len(info["urls"])
+    print(f"deck: {name} ({slug}, {total} cards)")
     print(f"dest: {deck_dir}")
     if on_start:
-        on_start(slug, name)
+        on_start(slug, name, total)
 
     failures: list[int] = []
     for card in CARDS:
-        url = info["urls"][card.index]
+        url = info["urls"].get(card.index)
+        if url is None:
+            continue  # partial deck (e.g. majors-only sources)
         existing = list(cards_dir.glob(f"{card.index:02d}.*"))
         if existing and not force:
             print(f"  [{card.index:02d}] {card.name}: exists, skipping")
@@ -115,6 +120,16 @@ def download_deck(
             on_card(card.index, card.index not in failures)
         time.sleep(delay)
 
+    if info.get("back_url") and not list(deck_dir.glob("back.*")):
+        try:
+            resp = client.get(info["back_url"])
+            resp.raise_for_status()
+            ext = EXT_BY_TYPE.get(resp.headers.get("content-type", "").split(";")[0].strip(), ".jpg")
+            (deck_dir / f"back{ext}").write_bytes(resp.content)
+            print("  [back] card back downloaded")
+        except Exception as e:
+            print(f"  [back] FAILED — {e}", file=sys.stderr)
+
     manifest = {
         "name": name,
         "source": info.get("source"),
@@ -125,10 +140,56 @@ def download_deck(
         yaml.safe_dump({k: v for k, v in manifest.items() if v}, sort_keys=False, allow_unicode=True)
     )
 
-    got = 78 - len(failures)
-    print(f"\n{got}/78 cards downloaded" + (f", failed: {failures}" if failures else ""))
+    got = total - len(failures)
+    print(f"\n{got}/{total} cards downloaded" + (f", failed: {failures}" if failures else ""))
     if failures:
         print("re-run the same command to retry the failed cards")
+    return deck_dir
+
+
+def import_dir(
+    src: Path,
+    dest_root: Path,
+    slug: str | None = None,
+    name: str | None = None,
+    max_width: int | None = None,
+) -> Path:
+    from tarot.decks import IMAGE_EXTS
+    from tarot.importer import map_filenames
+
+    files = {}
+    for f in sorted(src.iterdir()):
+        if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+            files.setdefault(f.stem, f)
+    mapping, back_stem, problems = map_filenames(list(files))
+    for p in problems:
+        print(f"  ! {p}", file=sys.stderr)
+    if len(mapping) < 22:
+        raise SystemExit(f"error: only recognized {len(mapping)} cards in {src}")
+
+    name = name or src.name
+    slug = slug or re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
+    deck_dir = dest_root / slug
+    cards_dir = deck_dir / "cards"
+    cards_dir.mkdir(parents=True, exist_ok=True)
+
+    for index, stem in sorted(mapping.items()):
+        f = files[stem]
+        data = f.read_bytes()
+        ext = f.suffix.lower()
+        if max_width:
+            data, new_ext = shrink(data, max_width)
+            ext = new_ext or ext
+        (cards_dir / f"{index:02d}{ext}").write_bytes(data)
+    if back_stem:
+        f = files[back_stem]
+        (deck_dir / f"back{f.suffix.lower()}").write_bytes(f.read_bytes())
+
+    (deck_dir / "manifest.yaml").write_text(
+        yaml.safe_dump({"name": name, "attribution": f"Imported from {src}"}, sort_keys=False, allow_unicode=True)
+    )
+    kind = "majors only" if len(mapping) == 22 and all(i < 22 for i in mapping) else f"{len(mapping)}/78"
+    print(f"imported {name} ({slug}): {kind}" + (", with back" if back_stem else ""))
     return deck_dir
 
 
@@ -138,7 +199,7 @@ def main() -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("source", help="deck page URL, 'rws', or a URL template with {n}/{nn}")
+    parser.add_argument("source", help="deck page URL, 'rws'/'marseille', a URL template with {n}/{nn}, or a local folder")
     parser.add_argument("--slug", help="deck folder name (default: derived from source)")
     parser.add_argument("--name", help="display name (default: derived from slug)")
     parser.add_argument("--dest", type=Path, default=None, help=f"decks root (default: {user_decks_dir()})")
@@ -147,6 +208,22 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="re-download existing cards")
     parser.add_argument("--max-width", type=int, default=None, help="downscale images wider than this many pixels")
     args = parser.parse_args()
+
+    src_path = Path(args.source).expanduser()
+    if src_path.is_dir():
+        deck_dir = import_dir(
+            src_path,
+            args.dest or user_decks_dir(args.user),
+            slug=args.slug,
+            name=args.name,
+            max_width=args.max_width,
+        )
+        from tarot.dedupe import dedupe_deck
+
+        shared = dedupe_deck(deck_dir)
+        if shared:
+            print(f"{shared} images deduplicated against existing decks")
+        return
 
     try:
         deck_dir = download_deck(

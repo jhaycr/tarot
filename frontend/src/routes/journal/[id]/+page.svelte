@@ -1,26 +1,51 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api, cardMeta, type Card as CardType, type SavedReading } from '$lib/api';
+	import { api, cardMeta, type Card as CardType, type DeckSummary, type DrawnCard, type SavedReading } from '$lib/api';
 	import CardDetail from '$lib/CardDetail.svelte';
+	import { prefJournalLayout } from '$lib/prefs.svelte';
 
 	const id = $derived(Number(page.params.id));
 
 	let reading = $state<SavedReading | null>(null);
+	let decks = $state<DeckSummary[]>([]);
+	let viewDeck = $state('');
 	let meta = $state<CardType[]>([]);
 	let notes = $state('');
 	let notesSaved = $state(true);
 	let selected = $state<number | null>(null);
+	let zoomed = $state<DrawnCard | null>(null);
 
 	$effect(() => {
 		api.reading(id)
 			.then((r) => {
 				reading = r;
 				notes = r.notes;
+				viewDeck = r.deck;
 			})
 			.catch(() => goto('/journal'));
+		api.decks().then((d) => (decks = d));
 		cardMeta().then((c) => (meta = c));
 	});
+
+	const compatibleDecks = $derived.by(() => {
+		if (!reading) return [];
+		const majorsFine = reading.cards.every((c) => c.card.index < 22);
+		return decks.filter(
+			(d) => d.slug === reading!.deck || d.complete || (d.majors_only && majorsFine)
+		);
+	});
+
+	const spreadMode = $derived(prefJournalLayout.value === 'spread');
+	const cols = $derived(reading ? Math.max(...reading.cards.map((c) => c.position.col ?? 1)) : 1);
+	const rows = $derived(reading ? Math.max(...reading.cards.map((c) => c.position.row ?? 1)) : 1);
+	const hasLayout = $derived(reading ? reading.cards.every((c) => c.position.col && c.position.row) : false);
+
+	function cellCards(col: number, row: number): { drawn: DrawnCard; i: number }[] {
+		return (reading?.cards ?? [])
+			.map((drawn, i) => ({ drawn, i }))
+			.filter(({ drawn }) => drawn.position.col === col && drawn.position.row === row);
+	}
 
 	async function saveNotes() {
 		if (!reading) return;
@@ -47,6 +72,8 @@
 	}
 </script>
 
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape') zoomed = null; }} />
+
 {#if reading}
 	<header class="head">
 		<div>
@@ -64,20 +91,77 @@
 		{/if}
 	</header>
 
-	<div class="cards">
-		{#each reading.cards as drawn, i (i)}
-			<button class="drawn" class:selected={selected === i} onclick={() => (selected = i)}>
-				<img
-					src={api.cardImage(reading.deck, drawn.card.index)}
-					alt={drawn.card.name}
-					class:flipped-img={drawn.reversed}
-					loading="lazy"
-				/>
-				<small class="pos">{drawn.position.name}</small>
-				<small>{drawn.card.name}{drawn.reversed ? ' (rev)' : ''}</small>
-			</button>
-		{/each}
+	<div class="viewbar">
+		{#if compatibleDecks.length > 1}
+			<label>
+				<span class="dim">View with deck</span>
+				<select bind:value={viewDeck}>
+					{#each compatibleDecks as d (d.slug)}
+						<option value={d.slug}>{d.name}{d.slug === reading.deck ? ' (original)' : ''}</option>
+					{/each}
+				</select>
+			</label>
+		{/if}
+		{#if hasLayout}
+			<div class="modes">
+				<button class:active={!spreadMode} onclick={() => (prefJournalLayout.value = 'grid')}>Grid</button>
+				<button class:active={spreadMode} onclick={() => (prefJournalLayout.value = 'spread')}>Spread</button>
+			</div>
+		{/if}
 	</div>
+
+	{#if spreadMode && hasLayout}
+		<div class="table" style="--cols: {cols}; --rows: {rows};">
+			{#each Array(rows) as _, r (r)}
+				{#each Array(cols) as _, c (c)}
+					{@const cell = cellCards(c + 1, r + 1)}
+					{#if cell.length}
+						<div class="cell" style="grid-column: {c + 1}; grid-row: {r + 1};">
+							{#each cell as { drawn, i } (i)}
+								<div class="slot" class:overlay={drawn.position.cross}>
+									<button
+										class="faceup"
+										class:cross={drawn.position.cross}
+										class:selected={selected === i}
+										onclick={() => (selected = selected === i ? (zoomed = drawn, i) : i)}
+									>
+										<img
+											src={api.cardImage(viewDeck, drawn.card.index)}
+											class:reversed={drawn.reversed}
+											alt={drawn.card.name}
+											loading="lazy"
+										/>
+									</button>
+									{#if !drawn.position.cross}
+										<small class="pos">{drawn.position.name}</small>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
+				{/each}
+			{/each}
+		</div>
+	{:else}
+		<div class="cards">
+			{#each reading.cards as drawn, i (i)}
+				<button
+					class="drawn"
+					class:selected={selected === i}
+					onclick={() => (selected = selected === i ? (zoomed = drawn, i) : i)}
+				>
+					<img
+						src={api.cardImage(viewDeck, drawn.card.index)}
+						alt={drawn.card.name}
+						class:reversed={drawn.reversed}
+						loading="lazy"
+					/>
+					<small class="pos">{drawn.position.name}</small>
+					<small>{drawn.card.name}{drawn.reversed ? ' (rev)' : ''}</small>
+				</button>
+			{/each}
+		</div>
+	{/if}
 
 	{#if selected !== null}
 		<CardDetail drawn={reading.cards[selected]} {meta} />
@@ -99,6 +183,17 @@
 			<h2>Notes</h2>
 			<p>{reading.notes}</p>
 		</section>
+	{/if}
+
+	{#if zoomed}
+		<div class="lightbox" role="presentation" onclick={() => (zoomed = null)}>
+			<figure>
+				<img src={api.cardImage(viewDeck, zoomed.card.index)} alt={zoomed.card.name} />
+				<figcaption>
+					{zoomed.card.name}{zoomed.reversed ? ' (reversed)' : ''} — {zoomed.position.name}
+				</figcaption>
+			</figure>
+		</div>
 	{/if}
 {/if}
 
@@ -128,11 +223,110 @@
 		color: var(--accent);
 	}
 
+	.viewbar {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 1rem;
+		flex-wrap: wrap;
+		margin: 1rem 0;
+	}
+
+	.viewbar label {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+
+	.viewbar select {
+		width: auto;
+	}
+
+	.modes {
+		display: flex;
+		gap: 0;
+	}
+
+	.modes button {
+		border-radius: 0;
+	}
+
+	.modes button:first-child {
+		border-radius: var(--radius) 0 0 var(--radius);
+	}
+
+	.modes button:last-child {
+		border-radius: 0 var(--radius) var(--radius) 0;
+	}
+
+	.modes button.active {
+		border-color: var(--gold);
+		color: var(--gold);
+	}
+
+	.table {
+		display: grid;
+		grid-template-columns: repeat(var(--cols), minmax(0, 9rem));
+		gap: 1.1rem;
+		justify-content: center;
+		margin-top: 0.5rem;
+	}
+
+	.cell {
+		position: relative;
+	}
+
+	.slot {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		align-items: center;
+	}
+
+	.slot.overlay {
+		position: absolute;
+		inset: 0 0 auto 0;
+		z-index: 2;
+	}
+
+	.faceup {
+		all: unset;
+		cursor: pointer;
+		display: block;
+		width: 100%;
+		aspect-ratio: var(--card-ratio);
+	}
+
+	.faceup.cross {
+		transform: rotate(90deg) scale(0.85);
+	}
+
+	.faceup img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		border-radius: 8px;
+		border: 1px solid var(--border);
+		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+	}
+
+	.faceup.selected img {
+		border-color: var(--gold);
+	}
+
+	img.reversed {
+		transform: rotate(180deg);
+	}
+
+	.faceup.cross img.reversed {
+		transform: rotate(180deg);
+	}
+
 	.cards {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr));
 		gap: 1rem;
-		margin-top: 1.5rem;
+		margin-top: 0.5rem;
 	}
 
 	.drawn {
@@ -156,12 +350,10 @@
 		border-color: var(--gold);
 	}
 
-	.flipped-img {
-		transform: rotate(180deg);
-	}
-
 	.pos {
 		color: var(--text-dim);
+		font-size: 0.75rem;
+		text-align: center;
 	}
 
 	.notes {
@@ -174,6 +366,32 @@
 
 	.notes textarea {
 		width: 100%;
+	}
+
+	.lightbox {
+		position: fixed;
+		inset: 0;
+		background: rgba(10, 8, 20, 0.88);
+		display: grid;
+		place-items: center;
+		z-index: 20;
+		cursor: zoom-out;
+	}
+
+	.lightbox figure {
+		margin: 0;
+		text-align: center;
+	}
+
+	.lightbox img {
+		max-height: 84dvh;
+		max-width: 92vw;
+		border-radius: 10px;
+	}
+
+	.lightbox figcaption {
+		margin-top: 0.6rem;
+		color: var(--gold-bright);
 	}
 
 	.dim {

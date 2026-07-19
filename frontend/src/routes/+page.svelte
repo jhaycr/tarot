@@ -1,7 +1,15 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { api, type DeckSummary, type Spread } from '$lib/api';
-	import { prefDeck, prefSpread, prefReversals } from '$lib/prefs.svelte';
+	import {
+		prefDeck,
+		prefSpread,
+		prefReversals,
+		favDecks,
+		recentDecks,
+		toggleFavDeck,
+		pushRecentDeck
+	} from '$lib/prefs.svelte';
 	import { readingStore } from '$lib/reading.svelte';
 
 	let decks = $state<DeckSummary[]>([]);
@@ -9,6 +17,28 @@
 	let question = $state('');
 	let error = $state('');
 	let drawing = $state(false);
+	let showAllDecks = $state(false);
+
+	function deckRank(d: DeckSummary): number {
+		if (favDecks.value.includes(d.slug)) return 0;
+		const r = recentDecks.value.indexOf(d.slug);
+		return r >= 0 ? 1 + r : 100;
+	}
+
+	const orderedDecks = $derived(
+		[...decks].sort((a, b) => deckRank(a) - deckRank(b) || a.name.localeCompare(b.name))
+	);
+	const visibleDecks = $derived.by(() => {
+		if (showAllDecks) return orderedDecks;
+		const pinned = orderedDecks.filter(
+			(d) =>
+				favDecks.value.includes(d.slug) ||
+				recentDecks.value.includes(d.slug) ||
+				d.slug === prefDeck.value
+		);
+		return pinned.length ? pinned : orderedDecks.slice(0, 3);
+	});
+	const hiddenDeckCount = $derived(decks.length - visibleDecks.length);
 
 	$effect(() => {
 		Promise.all([api.decks(), api.spreads()])
@@ -32,6 +62,7 @@
 				prefReversals.value === 'true',
 				question.trim() || undefined
 			);
+			pushRecentDeck(prefDeck.value);
 			readingStore.set(reading);
 			goto('/reading');
 		} catch (e) {
@@ -79,20 +110,38 @@
 	<div class="field">
 		<span>Deck</span>
 		<div class="choices">
-			{#each decks as deck (deck.slug)}
-				<button
-					class="choice deck"
-					class:selected={prefDeck.value === deck.slug}
-					onclick={() => (prefDeck.value = deck.slug)}
-				>
-					<img src={api.cardImage(deck.slug, 0)} alt="" loading="lazy" />
-					<span>
-						<strong>{deck.name}</strong>
-						{#if deck.majors_only}<small class="dim">majors only</small>
-						{:else if !deck.complete}<small class="warn">{deck.count}/78 cards</small>{/if}
-					</span>
-				</button>
+			{#each visibleDecks as deck (deck.slug)}
+				<div class="deckrow">
+					<button
+						class="choice deck"
+						class:selected={prefDeck.value === deck.slug}
+						onclick={() => (prefDeck.value = deck.slug)}
+					>
+						<img src={api.cardImage(deck.slug, 0)} alt="" loading="lazy" />
+						<span>
+							<strong>{deck.name}</strong>
+							{#if deck.majors_only}<small class="dim">majors only</small>
+							{:else if !deck.complete}<small class="warn">{deck.count}/78 cards</small>{/if}
+						</span>
+					</button>
+					<button
+						class="star"
+						class:faved={favDecks.value.includes(deck.slug)}
+						onclick={() => toggleFavDeck(deck.slug)}
+						aria-label={favDecks.value.includes(deck.slug) ? 'Unfavorite' : 'Favorite'}
+						title={favDecks.value.includes(deck.slug) ? 'Unfavorite' : 'Favorite'}
+					>
+						{favDecks.value.includes(deck.slug) ? '★' : '☆'}
+					</button>
+				</div>
 			{/each}
+			{#if hiddenDeckCount > 0}
+				<button class="more" onclick={() => (showAllDecks = true)}>
+					Show all decks ({hiddenDeckCount} more)
+				</button>
+			{:else if showAllDecks}
+				<button class="more" onclick={() => (showAllDecks = false)}>Show fewer</button>
+			{/if}
 		</div>
 	</div>
 
@@ -160,6 +209,32 @@
 		flex-direction: row;
 		align-items: center;
 		gap: 0.9rem;
+	}
+
+	.deckrow {
+		display: flex;
+		gap: 0.5rem;
+		align-items: stretch;
+	}
+
+	.deckrow .choice {
+		flex: 1;
+	}
+
+	.star {
+		padding: 0 0.7rem;
+		font-size: 1.1rem;
+		color: var(--text-dim);
+	}
+
+	.star.faved {
+		color: var(--gold);
+		border-color: var(--gold);
+	}
+
+	.more {
+		color: var(--accent);
+		border-style: dashed;
 	}
 
 	.choice.deck img {

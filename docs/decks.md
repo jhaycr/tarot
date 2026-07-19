@@ -60,10 +60,12 @@ never affects another, and unreferenced objects are pruned.
 
 ```bash
 tarot-dl rws                                              # public-domain Rider–Waite–Smith (Wikimedia)
+tarot-dl marseille                                        # Jean Dodal Tarot de Marseille trumps (majors-only)
 tarot-dl https://elvitarot.com/decks/tarot/<deck>         # elvitarot adapter
 tarot-dl https://www.tarot.com/tarot/decks/<deck>         # tarot.com adapter
 tarot-dl https://meliorem.info/cards/<deck>/<any-card>    # meliorem adapter
 tarot-dl 'https://example.com/cards/{n}.jpg' --slug my-deck --name 'My Deck'   # generic template
+tarot-dl ~/Pictures/Tarot/MyDeck --name 'My Deck'         # local folder import (naming below)
 ```
 
 The generic template accepts `{n}` (0–77) or `{nn}` (zero-padded). Flags:
@@ -88,12 +90,23 @@ Downloaded decks are for personal use. Buy the physical decks you love.
 ## Uploading from the browser
 
 Decks page → **Upload a deck**: a zip of card images, landing in your personal
-collection.
+collection. Filenames are mapped to the canonical index by recognizing any mix
+of these styles (`tarot-dl <folder>` imports use the same rules):
 
-- **78 images** → full deck, or **22 images** → majors-only; files are assigned
-  to the canonical index in alphabetical filename order
-- Or number the files `00`–`77` yourself for explicit mapping (any subset works)
-- An entry named `back.*` becomes the card back
+| Style | Examples | Notes |
+|---|---|---|
+| Canonical numeric | `00.jpg` … `77.jpg` | authoritative |
+| Named | `00-Major-Fool.jpg`, `23-Minor-Discs-02.jpg` | mapped by **name**, so Marseilles trump order (Justice VIII) and any suit order land correctly; the leading number is ignored |
+| Commons-style | `Wands01.jpg` … `Wands14.jpg`, `Coins07.jpg`, `RWS_Tarot_08_Strength.jpg` | `01`=ace … `10`, `11`–`14`=page/knight/queen/king |
+| 1-based numeric | `Card01.jpg` … `Card78.jpg` | detected when there's no card 0; `01` becomes The Fool |
+
+- Suit synonyms: batons/staves/rods→wands, chalices→cups, discs/coins/deniers→pentacles
+- Court synonyms: knave/princess/valet→page, prince/cavalier→knight
+- `back.*`/`*reverse*` becomes the card back; `*box*`/`*cover*` files are ignored
+- 78 recognized images → full deck; exactly the 22 majors → majors-only; partial
+  decks are accepted when every file is recognized
+- If nothing is recognizable but the zip holds exactly 78 (or 22) images, they're
+  assigned in alphabetical order as a fallback
 - Nested folders inside the zip are fine; non-image entries are ignored
 
 ## Sharing

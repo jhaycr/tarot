@@ -6,13 +6,15 @@
 		deck,
 		hasBack,
 		flipped = $bindable(false),
-		cross = false
+		cross = false,
+		next = false
 	}: {
 		drawn: DrawnCard;
 		deck: string;
 		hasBack: boolean;
 		flipped?: boolean;
 		cross?: boolean;
+		next?: boolean;
 	} = $props();
 </script>
 
@@ -20,9 +22,9 @@
 	class="card"
 	class:flipped
 	class:cross
+	class:next={next && !flipped}
 	class:reversed={drawn.reversed}
 	onclick={() => (flipped = true)}
-	title={flipped ? drawn.card.name : drawn.position.name}
 	aria-label={flipped ? drawn.card.name : `Reveal ${drawn.position.name}`}
 >
 	<div class="inner">
@@ -37,6 +39,12 @@
 			<img src={api.cardImage(deck, drawn.card.index)} alt={drawn.card.name} loading="lazy" />
 		</div>
 	</div>
+	{#if !flipped}
+		<span class="tip" role="tooltip">
+			<strong>{drawn.position.name}</strong> — {drawn.position.meaning}
+			{#if next}<em>· flip next</em>{/if}
+		</span>
+	{/if}
 </button>
 
 <style>
@@ -44,6 +52,7 @@
 		all: unset;
 		cursor: pointer;
 		display: block;
+		position: relative;
 		aspect-ratio: var(--card-ratio);
 		width: 100%;
 		perspective: 1200px;
@@ -75,6 +84,21 @@
 		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 	}
 
+	.card.next .face.back {
+		animation: beckon 1.8s ease-in-out infinite;
+		border-color: var(--gold);
+	}
+
+	@keyframes beckon {
+		0%,
+		100% {
+			box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45), 0 0 0 0 rgba(212, 175, 106, 0.55);
+		}
+		50% {
+			box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45), 0 0 14px 4px rgba(212, 175, 106, 0.55);
+		}
+	}
+
 	.face img {
 		width: 100%;
 		height: 100%;
@@ -95,9 +119,47 @@
 		height: 100%;
 		display: grid;
 		place-items: center;
-		background:
-			repeating-linear-gradient(45deg, #2a2450 0 8px, #241f42 8px 16px);
+		background: repeating-linear-gradient(45deg, #2a2450 0 8px, #241f42 8px 16px);
 		color: var(--gold);
 		font-size: 2rem;
+	}
+
+	.tip {
+		position: absolute;
+		bottom: calc(100% + 0.45rem);
+		left: 50%;
+		transform: translateX(-50%);
+		width: max-content;
+		max-width: 15rem;
+		background: var(--bg-raised);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 0.45rem 0.7rem;
+		font-size: 0.8rem;
+		line-height: 1.35;
+		color: var(--text-dim);
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.15s;
+		z-index: 8;
+	}
+
+	.tip strong {
+		color: var(--gold-bright);
+	}
+
+	.tip em {
+		color: var(--gold);
+		font-style: normal;
+	}
+
+	.card:hover .tip,
+	.card:focus-visible .tip {
+		opacity: 1;
+	}
+
+	/* the rotated cross card would show a rotated tooltip — counter-rotate it */
+	.card.cross .tip {
+		transform: translateX(-50%) rotate(-90deg);
 	}
 </style>

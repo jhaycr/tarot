@@ -155,6 +155,48 @@ class WikimediaRWS(Adapter):
         }
 
 
+class MarseilleDodal(Adapter):
+    """Built-in: Jean Dodal Tarot de Marseille trumps (c. 1701, public domain)
+    from Wikimedia Commons — a majors-only deck. Invoke with source 'marseille'.
+
+    Marseilles numbering has Justice as VIII and Strength (La Force) as XI —
+    swapped relative to the RWS-based canonical index — so trumps are mapped
+    by card identity, not by their printed number.
+    """
+
+    name = "marseille"
+    width = 640
+
+    @staticmethod
+    def matches(url: str) -> bool:
+        return url.strip().lower() in ("marseille", "marseilles", "dodal")
+
+    def resolve(self, url: str, client: httpx.Client) -> dict:
+        fp = "https://commons.wikimedia.org/wiki/Special:FilePath"
+        w = f"?width={self.width}"
+
+        def trump(n: int) -> str:
+            return f"{fp}/Jean_Dodal_Tarot_trump_{n:02d}.jpg{w}"
+
+        urls = {0: f"{fp}/Jean_Dodal_Tarot_trump_Fool.jpg{w}"}
+        for i in range(1, 22):
+            if i == 8:
+                urls[i] = trump(11)  # La Force (Strength)
+            elif i == 11:
+                urls[i] = trump(8)  # La Justice
+            else:
+                urls[i] = trump(i)
+        return {
+            "slug": "marseille-dodal",
+            "name": "Tarot de Marseille (Dodal)",
+            "source": "https://commons.wikimedia.org/wiki/Category:Tarot_de_Marseille_-_Jean_Dodal",
+            "attribution": "Jean Dodal, Lyon c. 1701 — public domain scans via Wikimedia Commons",
+            "license": "Public domain",
+            "back_url": f"{fp}/Jean_Dodal_Tarot_reverse.jpg{w}",
+            "urls": urls,
+        }
+
+
 class Template(Adapter):
     """Generic: a URL template with {n} (0-77) or {nn} (zero-padded) placeholders."""
 
@@ -174,7 +216,7 @@ class Template(Adapter):
         }
 
 
-ADAPTERS: list[type[Adapter]] = [WikimediaRWS, ElviTarot, TarotCom, Meliorem, Template]
+ADAPTERS: list[type[Adapter]] = [WikimediaRWS, MarseilleDodal, ElviTarot, TarotCom, Meliorem, Template]
 
 
 def find_adapter(url: str) -> Adapter:

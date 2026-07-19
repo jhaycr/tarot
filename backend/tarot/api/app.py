@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import crypto, db, dedupe, interpret as interp
+from tarot import crypto, db, dedupe, importer, interpret as interp
 from tarot.auth import current_user, is_admin
 from tarot.cards import CARDS
 from tarot.decks import IMAGE_EXTS, discover_decks, set_deck_shared, user_decks_dir
@@ -164,13 +164,14 @@ def start_deck_download(req: DownloadRequest, user: User):
         "name": req.name,
         "completed": 0,
         "failed": [],
+        "total": 78,
         "done": False,
         "error": None,
     }
     DOWNLOAD_JOBS[job_id] = job
 
-    def on_start(slug: str, name: str) -> None:
-        job["slug"], job["name"] = slug, name
+    def on_start(slug: str, name: str, total: int) -> None:
+        job["slug"], job["name"], job["total"] = slug, name, total
 
     def on_card(index: int, ok: bool) -> None:
         if ok:
@@ -204,7 +205,7 @@ def deck_download_status(job_id: str, user: User):
     job = DOWNLOAD_JOBS.get(job_id)
     if not job or job["owner"] != user:
         raise HTTPException(404, "job not found")
-    return {k: v for k, v in job.items() if k != "owner"} | {"total": 78}
+    return {k: v for k, v in job.items() if k != "owner"}
 
 
 MAX_UPLOAD_BYTES = 300 * 1024 * 1024
@@ -227,46 +228,46 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
     except zipfile.BadZipFile:
         raise HTTPException(400, "not a zip file")
 
-    images: list[tuple[str, str]] = []  # (basename-without-ext, entry-name)
-    back_entry: str | None = None
+    entries: dict[str, str] = {}  # stem -> zip entry name
     for entry in zf.namelist():
         base = os.path.basename(entry)
         stem, ext = os.path.splitext(base)
         if not stem or base.startswith(".") or ext.lower() not in IMAGE_EXTS:
             continue
-        if stem.lower() == "back":
-            back_entry = entry
-        else:
-            images.append((stem, entry))
+        entries.setdefault(stem, entry)
 
-    # numbered filenames map directly; otherwise alphabetical order must yield
-    # a full 78-card deck or a 22-card majors-only deck
-    if images and all(s.isdigit() and 0 <= int(s) <= 77 for s, _ in images):
-        mapping = {int(s): e for s, e in images}
-        if len(mapping) != len(images):
-            raise HTTPException(400, "duplicate card numbers in zip")
-    elif len(images) in (78, 22):
-        mapping = {i: e for i, (_, e) in enumerate(sorted(images))}
-    else:
-        raise HTTPException(
-            400,
-            f"found {len(images)} images — upload 78 (full) or 22 (majors only), "
-            "or number the files 00-77 to map them explicitly",
-        )
+    mapping, back_stem, problems = importer.map_filenames(list(entries))
+    complete = len(mapping) == 78 or (len(mapping) == 22 and all(i < 22 for i in mapping))
+    if not mapping and len(entries) in (78, 22):
+        # unrecognizable names but the right count: assign in alphabetical order
+        mapping = {i: stem for i, stem in enumerate(sorted(entries))}
+        problems = []
+        complete = True
+    if not complete and problems:
+        raise HTTPException(400, "couldn't map these files: " + "; ".join(problems[:10]))
+    if len(mapping) < 22:
+        raise HTTPException(400, f"only recognized {len(mapping)} cards — see docs/decks.md for naming")
 
     cards_dir = dest / "cards"
     cards_dir.mkdir(parents=True)
-    for index, entry in mapping.items():
+    for index, stem in mapping.items():
+        entry = entries[stem]
         ext = os.path.splitext(entry)[1].lower()
         (cards_dir / f"{index:02d}{ext}").write_bytes(zf.read(entry))
-    if back_entry:
-        ext = os.path.splitext(back_entry)[1].lower()
-        (dest / f"back{ext}").write_bytes(zf.read(back_entry))
+    if back_stem:
+        entry = entries[back_stem]
+        ext = os.path.splitext(entry)[1].lower()
+        (dest / f"back{ext}").write_bytes(zf.read(entry))
     (dest / "manifest.yaml").write_text(
         yaml.safe_dump({"name": name, "attribution": f"Uploaded by {user}"}, sort_keys=False, allow_unicode=True)
     )
     dedupe.dedupe_deck(dest)
-    return {"slug": slug, "count": len(mapping), "majors_only": len(mapping) == 22}
+    return {
+        "slug": slug,
+        "count": len(mapping),
+        "majors_only": len(mapping) == 22 and all(i < 22 for i in mapping),
+        "warnings": problems,
+    }
 
 
 @app.get("/api/spreads")

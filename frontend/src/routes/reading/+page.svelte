@@ -12,6 +12,7 @@
 	let meta = $state<CardType[]>([]);
 	let flips = $state<boolean[]>(reading ? reading.cards.map(() => false) : []);
 	let selected = $state<number | null>(null);
+	let zoomed = $state<DrawnCard | null>(null);
 	let savedId = $state<number | null>(null);
 	let saving = $state(false);
 	let llmEnabled = $state(false);
@@ -42,6 +43,7 @@
 
 	const deckInfo = $derived(decks.find((d) => d.slug === reading?.deck));
 	const allFlipped = $derived(flips.every(Boolean));
+	const nextIdx = $derived(flips.indexOf(false));
 	const cols = $derived(reading ? Math.max(...reading.cards.map((c) => c.position.col)) : 1);
 	const rows = $derived(reading ? Math.max(...reading.cards.map((c) => c.position.row)) : 1);
 
@@ -49,6 +51,12 @@
 		return (reading?.cards ?? [])
 			.map((drawn, i) => ({ drawn, i }))
 			.filter(({ drawn }) => drawn.position.col === col && drawn.position.row === row);
+	}
+
+	function slotClick(i: number) {
+		if (!flips[i]) return;
+		if (selected === i) zoomed = reading!.cards[i];
+		else selected = i;
 	}
 
 	function revealAll() {
@@ -82,12 +90,24 @@
 	}
 </script>
 
+<svelte:window
+	onkeydown={(e) => {
+		if (e.key === 'Escape') {
+			if (zoomed) zoomed = null;
+			else selected = null;
+		}
+	}}
+/>
+
 {#if reading}
 	<section class="reading">
 		<header class="head">
 			<div>
 				{#if reading.question}<h1>“{reading.question}”</h1>{/if}
-				<p class="dim">{deckInfo?.name ?? reading.deck} · tap a card to reveal it</p>
+				<p class="dim">
+					{deckInfo?.name ?? reading.deck} · tap the glowing card to continue · tap a revealed card
+					for its meaning, again for full art
+				</p>
 			</div>
 			<div class="actions">
 				{#if !allFlipped}
@@ -113,19 +133,33 @@
 									class:overlay={drawn.position.cross}
 									class:selected={selected === i}
 									role="presentation"
-									onclick={() => { if (flips[i]) selected = i; }}
+									onclick={() => slotClick(i)}
 								>
 									<Card
 										{drawn}
 										deck={reading.deck}
 										hasBack={deckInfo?.has_back ?? false}
 										cross={drawn.position.cross ?? false}
+										next={i === nextIdx}
 										bind:flipped={
 											() => flips[i],
 											(v) => { flips[i] = v; if (v) selected = i; }
 										}
 									/>
-									<span class="pos">{drawn.position.name}</span>
+									<span class="pos" class:nextpos={i === nextIdx && !flips[i]}>{drawn.position.name}</span>
+
+									{#if selected === i && flips[i]}
+										<div
+											class="popover"
+											class:flip-left={drawn.position.col > cols / 2}
+											role="presentation"
+											onclick={(e) => e.stopPropagation()}
+										>
+											<button class="close" onclick={() => (selected = null)} aria-label="Close">✕</button>
+											<CardDetail {drawn} {meta} />
+											<button class="zoom" onclick={() => (zoomed = drawn)}>⤢ View full art</button>
+										</div>
+									{/if}
 								</div>
 							{/each}
 						</div>
@@ -133,10 +167,6 @@
 				{/each}
 			{/each}
 		</div>
-
-		{#if selected !== null && flips[selected]}
-			<CardDetail drawn={reading.cards[selected]} {meta} />
-		{/if}
 
 		{#if llmEnabled && allFlipped}
 			<aside class="interpretation">
@@ -162,6 +192,17 @@
 			</aside>
 		{/if}
 	</section>
+
+	{#if zoomed}
+		<div class="lightbox" role="presentation" onclick={() => (zoomed = null)}>
+			<figure>
+				<img src={api.cardImage(reading.deck, zoomed.card.index)} alt={zoomed.card.name} />
+				<figcaption>
+					{zoomed.card.name}{zoomed.reversed ? ' (reversed)' : ''} — {zoomed.position.name}
+				</figcaption>
+			</figure>
+		</div>
+	{/if}
 {/if}
 
 <style>
@@ -200,6 +241,7 @@
 	}
 
 	.slot {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		gap: 0.4rem;
@@ -216,6 +258,10 @@
 		display: none;
 	}
 
+	.slot.selected {
+		z-index: 12;
+	}
+
 	.slot.selected .pos {
 		color: var(--gold);
 	}
@@ -224,6 +270,64 @@
 		font-size: 0.8rem;
 		color: var(--text-dim);
 		text-align: center;
+	}
+
+	.pos.nextpos {
+		color: var(--gold);
+	}
+
+	.popover {
+		position: absolute;
+		top: -0.4rem;
+		left: calc(100% + 0.7rem);
+		width: 18rem;
+		z-index: 12;
+		background: var(--bg-raised);
+		border: 1px solid var(--gold);
+		border-radius: var(--radius);
+		box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+		cursor: default;
+	}
+
+	.popover.flip-left {
+		left: auto;
+		right: calc(100% + 0.7rem);
+	}
+
+	.popover :global(.detail) {
+		margin: 0;
+		max-width: none;
+		background: none;
+		border: none;
+		padding: 0.9rem 2rem 0.4rem 1rem;
+	}
+
+	.popover .close {
+		position: absolute;
+		top: 0.4rem;
+		right: 0.4rem;
+		padding: 0.15rem 0.45rem;
+		font-size: 0.8rem;
+		border-radius: 6px;
+	}
+
+	.popover .zoom {
+		margin: 0 1rem 0.9rem;
+		font-size: 0.85rem;
+		padding: 0.35rem 0.8rem;
+	}
+
+	@media (max-width: 700px) {
+		.popover,
+		.popover.flip-left {
+			position: fixed;
+			inset: auto 0 0 0;
+			width: auto;
+			max-height: 65dvh;
+			overflow-y: auto;
+			border-radius: var(--radius) var(--radius) 0 0;
+			border-bottom: none;
+		}
 	}
 
 	.dim {
@@ -256,6 +360,32 @@
 
 	.error {
 		color: var(--danger);
+	}
+
+	.lightbox {
+		position: fixed;
+		inset: 0;
+		background: rgba(10, 8, 20, 0.88);
+		display: grid;
+		place-items: center;
+		z-index: 20;
+		cursor: zoom-out;
+	}
+
+	.lightbox figure {
+		margin: 0;
+		text-align: center;
+	}
+
+	.lightbox img {
+		max-height: 84dvh;
+		max-width: 92vw;
+		border-radius: 10px;
+	}
+
+	.lightbox figcaption {
+		margin-top: 0.6rem;
+		color: var(--gold-bright);
 	}
 
 	@media (max-width: 640px) {
