@@ -16,3 +16,4 @@ function persisted(key: string, fallback: string): { value: string } {
 export const prefDeck = persisted('tarot.deck', '');
 export const prefSpread = persisted('tarot.spread', 'three-card');
 export const prefReversals = persisted('tarot.reversals', 'true');
+export const prefPersona = persisted('tarot.persona', 'alice');

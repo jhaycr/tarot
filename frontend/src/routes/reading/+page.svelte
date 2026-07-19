@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { api, cardMeta, type Card as CardType, type DeckSummary, type DrawnCard } from '$lib/api';
+	import { api, cardMeta, type Card as CardType, type DeckSummary, type DrawnCard, type Persona } from '$lib/api';
+	import { prefPersona } from '$lib/prefs.svelte';
 	import Card from '$lib/Card.svelte';
 	import { readingStore } from '$lib/reading.svelte';
 
@@ -16,13 +17,25 @@
 	let interpretation = $state('');
 	let interpreting = $state(false);
 	let interpretError = $state('');
+	let personas = $state<Persona[]>([]);
+	let hasCustom = $state(false);
 
 	$effect(() => {
 		if (!reading) goto('/');
 		else {
 			api.decks().then((d) => (decks = d));
 			cardMeta().then((c) => (meta = c));
-			api.me().then((m) => (llmEnabled = m.interpretation));
+			api.me().then((m) => {
+				llmEnabled = m.interpretation;
+				if (m.interpretation) {
+					api.personas().then((p) => {
+						personas = p.personas;
+						hasCustom = p.has_custom;
+						const valid = [...p.personas.map((x) => x.slug), ...(p.has_custom ? ['custom'] : [])];
+						if (!valid.includes(prefPersona.value)) prefPersona.value = p.default;
+					});
+				}
+			});
 		}
 	});
 
@@ -64,7 +77,7 @@
 		interpreting = true;
 		interpretError = '';
 		try {
-			const res = await api.interpret(reading.question, reading.spread, reading.cards);
+			const res = await api.interpret(reading.question, reading.spread, reading.cards, prefPersona.value);
 			interpretation = res.interpretation;
 		} catch (e) {
 			interpretError = String(e);
@@ -148,9 +161,17 @@
 						<p>{para}</p>
 					{/each}
 				{:else}
-					<button onclick={interpret} disabled={interpreting}>
-						{interpreting ? 'Consulting the cards…' : '✶ Interpret this reading'}
-					</button>
+					<div class="ask">
+						<select bind:value={prefPersona.value} aria-label="Reader persona">
+							{#each personas as p (p.slug)}
+								<option value={p.slug} title={p.description}>{p.name}</option>
+							{/each}
+							{#if hasCustom}<option value="custom">Custom</option>{/if}
+						</select>
+						<button onclick={interpret} disabled={interpreting}>
+							{interpreting ? 'Consulting the cards…' : '✶ Interpret this reading'}
+						</button>
+					</div>
 					{#if interpretError}<p class="error">{interpretError}</p>{/if}
 				{/if}
 			</aside>
@@ -257,6 +278,16 @@
 
 	.interpretation p {
 		text-align: left;
+	}
+
+	.ask {
+		display: flex;
+		gap: 0.6rem;
+		justify-content: center;
+	}
+
+	.ask select {
+		width: auto;
 	}
 
 	.error {

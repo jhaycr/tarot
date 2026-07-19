@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS readings (
     shared INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_readings_owner ON readings(owner, created_at DESC);
+CREATE TABLE IF NOT EXISTS user_prompts (
+    owner TEXT PRIMARY KEY,
+    system_prompt TEXT NOT NULL
+);
 """
 
 
@@ -93,6 +97,26 @@ def update_reading(reading_id: int, owner: str, notes: str | None = None, shared
             "SELECT * FROM readings WHERE id = ? AND owner = ?", (reading_id, owner)
         ).fetchone()
         return _row_to_dict(row) if row else None
+
+
+def get_user_prompt(owner: str) -> str:
+    with connect() as con:
+        row = con.execute(
+            "SELECT system_prompt FROM user_prompts WHERE owner = ?", (owner,)
+        ).fetchone()
+        return row["system_prompt"] if row else ""
+
+
+def set_user_prompt(owner: str, system_prompt: str) -> None:
+    with connect() as con:
+        if system_prompt.strip():
+            con.execute(
+                "INSERT INTO user_prompts (owner, system_prompt) VALUES (?, ?) "
+                "ON CONFLICT(owner) DO UPDATE SET system_prompt = excluded.system_prompt",
+                (owner, system_prompt),
+            )
+        else:
+            con.execute("DELETE FROM user_prompts WHERE owner = ?", (owner,))
 
 
 def delete_reading(reading_id: int, owner: str) -> bool:

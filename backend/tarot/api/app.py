@@ -142,6 +142,7 @@ class InterpretRequest(BaseModel):
     question: str | None = None
     spread: str
     cards: list[dict]
+    persona: str | None = None  # "alice" | "selene" | "custom" | None = user default
 
 
 @app.post("/api/interpret")
@@ -151,10 +152,43 @@ async def interpret_reading(req: InterpretRequest, user: User):
     spread = SPREADS_BY_SLUG.get(req.spread)
     spread_name = spread["name"] if spread else req.spread
     try:
-        text = await interp.interpret(req.question, spread_name, req.cards)
+        prompt = interp.resolve_prompt(req.persona, db.get_user_prompt(user))
+    except KeyError:
+        raise HTTPException(404, f"unknown persona '{req.persona}'")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    try:
+        text = await interp.interpret(req.question, spread_name, req.cards, system_prompt=prompt)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"LLM endpoint error: {e}")
-    return {"interpretation": text}
+    return {"interpretation": text, "persona": req.persona or ("custom" if db.get_user_prompt(user) else interp.DEFAULT_PERSONA)}
+
+
+@app.get("/api/personas")
+def list_personas(user: User):
+    return {
+        "personas": [
+            {"slug": slug, "name": p["name"], "description": p["description"]}
+            for slug, p in interp.PERSONAS.items()
+        ],
+        "has_custom": bool(db.get_user_prompt(user)),
+        "default": interp.DEFAULT_PERSONA,
+    }
+
+
+class PromptRequest(BaseModel):
+    prompt: str = Field(default="", max_length=8000)
+
+
+@app.get("/api/settings/prompt")
+def get_prompt(user: User):
+    return {"prompt": db.get_user_prompt(user), "personas": {s: p["prompt"] for s, p in interp.PERSONAS.items()}}
+
+
+@app.put("/api/settings/prompt")
+def set_prompt(req: PromptRequest, user: User):
+    db.set_user_prompt(user, req.prompt)
+    return {"prompt": db.get_user_prompt(user)}
 
 
 class SaveReadingRequest(BaseModel):

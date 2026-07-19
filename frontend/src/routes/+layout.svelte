@@ -15,7 +15,8 @@
 	const links = [
 		{ href: '/', label: 'Reading' },
 		{ href: '/decks', label: 'Decks' },
-		{ href: '/journal', label: 'Journal' }
+		{ href: '/journal', label: 'Journal' },
+		{ href: '/settings', label: 'Settings' }
 	];
 
 	function isActive(href: string): boolean {

@@ -51,6 +51,12 @@ export interface Reading {
 	cards: DrawnCard[];
 }
 
+export interface Persona {
+	slug: string;
+	name: string;
+	description: string;
+}
+
 export interface SavedReading extends Reading {
 	id: number;
 	owner: string;
@@ -78,8 +84,18 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
 
 export const api = {
 	me: () => get<{ user: string; interpretation: boolean }>('/api/me'),
-	interpret: (question: string | null, spread: string, cards: DrawnCard[]) =>
-		send<{ interpretation: string }>('POST', '/api/interpret', { question, spread, cards }),
+	interpret: (question: string | null, spread: string, cards: DrawnCard[], persona?: string) =>
+		send<{ interpretation: string }>('POST', '/api/interpret', {
+			question,
+			spread,
+			cards,
+			persona: persona || null
+		}),
+	personas: () =>
+		get<{ personas: Persona[]; has_custom: boolean; default: string }>('/api/personas'),
+	getPrompt: () => get<{ prompt: string; personas: Record<string, string> }>('/api/settings/prompt'),
+	setPrompt: (prompt: string) =>
+		send<{ prompt: string }>('PUT', '/api/settings/prompt', { prompt }),
 	cards: () => get<Card[]>('/api/cards'),
 	decks: () => get<DeckSummary[]>('/api/decks'),
 	spreads: () => get<Spread[]>('/api/spreads'),
