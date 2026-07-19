@@ -24,6 +24,51 @@
 		await refresh();
 	}
 
+	let dlSource = $state('');
+	let dlName = $state('');
+	let dlJob = $state<string | null>(null);
+	let dlProgress = $state({ completed: 0, total: 78, failed: 0 });
+	let dlError = $state('');
+	let dlDoneMsg = $state('');
+
+	async function startDownload() {
+		if (!dlSource.trim()) return;
+		dlError = '';
+		dlDoneMsg = '';
+		try {
+			const { job } = await api.startDeckDownload(dlSource.trim(), dlName.trim() || undefined);
+			dlJob = job;
+			poll(job);
+		} catch (e) {
+			dlError = e instanceof Error ? e.message : String(e);
+		}
+	}
+
+	async function poll(job: string) {
+		try {
+			const s = await api.deckDownloadStatus(job);
+			dlProgress = { completed: s.completed, total: s.total, failed: s.failed.length };
+			if (s.done) {
+				dlJob = null;
+				if (s.error) {
+					dlError = s.error;
+				} else {
+					dlDoneMsg =
+						s.failed.length === 0
+							? `“${s.name ?? s.slug}” downloaded (${s.completed}/${s.total}).`
+							: `“${s.name ?? s.slug}”: ${s.completed}/${s.total} cards — run the same download again to retry the ${s.failed.length} missing.`;
+					dlSource = '';
+					dlName = '';
+				}
+				await refresh();
+			} else {
+				setTimeout(() => poll(job), 1500);
+			}
+		} catch {
+			setTimeout(() => poll(job), 3000);
+		}
+	}
+
 	async function upload() {
 		if (!uploadFile || !uploadName.trim()) return;
 		uploading = true;
@@ -55,6 +100,33 @@
 		<code>tarot-dl &lt;source-url&gt;</code> on the server.
 	</p>
 {/if}
+
+<section class="upload">
+	<h2>Download a deck</h2>
+	<p class="dim">
+		Paste a deck page URL from a supported site, type <code>rws</code> for the classic
+		Rider–Waite–Smith, or use a URL template with <code>{'{n}'}</code>. Downloads into
+		your personal collection — for personal use only.
+	</p>
+	<div class="row">
+		<input type="text" placeholder="https://… or rws" bind:value={dlSource} disabled={dlJob !== null} />
+		<input type="text" placeholder="Name (optional)" bind:value={dlName} disabled={dlJob !== null} />
+		<button onclick={startDownload} disabled={dlJob !== null || !dlSource.trim()}>
+			{dlJob ? 'Downloading…' : 'Download'}
+		</button>
+	</div>
+	{#if dlJob}
+		<div class="progress">
+			<div class="bar" style="width: {(dlProgress.completed / dlProgress.total) * 100}%"></div>
+		</div>
+		<p class="dim">
+			{dlProgress.completed}/{dlProgress.total} cards
+			{#if dlProgress.failed}· {dlProgress.failed} failed{/if}
+		</p>
+	{/if}
+	{#if dlDoneMsg}<p class="ok">{dlDoneMsg}</p>{/if}
+	{#if dlError}<p class="error">{dlError}</p>{/if}
+</section>
 
 <section class="upload">
 	<h2>Upload a deck</h2>
@@ -175,5 +247,23 @@
 
 	.error {
 		color: var(--danger);
+	}
+
+	.ok {
+		color: var(--gold);
+	}
+
+	.progress {
+		height: 6px;
+		background: var(--bg-raised);
+		border-radius: 3px;
+		overflow: hidden;
+		margin-top: 0.8rem;
+	}
+
+	.progress .bar {
+		height: 100%;
+		background: linear-gradient(90deg, var(--accent), var(--gold));
+		transition: width 0.6s;
 	}
 </style>

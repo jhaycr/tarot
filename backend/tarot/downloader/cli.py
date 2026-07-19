@@ -53,6 +53,8 @@ def download_deck(
     delay: float = 0.5,
     force: bool = False,
     max_width: int | None = None,
+    on_start=None,  # called once with (slug, name) after the source resolves
+    on_card=None,  # called after each card with (index, ok)
 ) -> Path:
     client = httpx.Client(
         headers={"User-Agent": USER_AGENT},
@@ -73,6 +75,8 @@ def download_deck(
 
     print(f"deck: {name} ({slug})")
     print(f"dest: {deck_dir}")
+    if on_start:
+        on_start(slug, name)
 
     failures: list[int] = []
     for card in CARDS:
@@ -80,6 +84,8 @@ def download_deck(
         existing = list(cards_dir.glob(f"{card.index:02d}.*"))
         if existing and not force:
             print(f"  [{card.index:02d}] {card.name}: exists, skipping")
+            if on_card:
+                on_card(card.index, True)
             continue
         try:
             resp = client.get(url)
@@ -105,6 +111,8 @@ def download_deck(
         except Exception as e:
             failures.append(card.index)
             print(f"  [{card.index:02d}] {card.name}: FAILED — {e}", file=sys.stderr)
+        if on_card:
+            on_card(card.index, card.index not in failures)
         time.sleep(delay)
 
     manifest = {

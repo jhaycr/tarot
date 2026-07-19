@@ -96,6 +96,23 @@ export const api = {
 		if (!res.ok) throw new Error((await res.json()).detail ?? `upload failed: ${res.status}`);
 		return res.json() as Promise<{ slug: string; count: number; majors_only: boolean }>;
 	},
+	startDeckDownload: (source: string, name?: string, slug?: string) =>
+		send<{ job: string }>('POST', '/api/decks/download', {
+			source,
+			name: name || null,
+			slug: slug || null
+		}),
+	deckDownloadStatus: (job: string) =>
+		get<{
+			source: string;
+			slug: string | null;
+			name: string | null;
+			completed: number;
+			failed: number[];
+			done: boolean;
+			error: string | null;
+			total: number;
+		}>(`/api/decks/download/${job}`),
 	getLlmSettings: () =>
 		get<{ base_url: string; model: string; api_key_set: boolean; from_env: boolean }>(
 			'/api/settings/llm'

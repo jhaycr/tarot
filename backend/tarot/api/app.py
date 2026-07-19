@@ -3,6 +3,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import zipfile
 
 import httpx
@@ -126,6 +127,78 @@ def share_deck(slug: str, req: ShareRequest, user: User):
         raise HTTPException(403, "only the deck's owner can change sharing")
     set_deck_shared(deck, req.shared)
     return {"slug": slug, "shared": req.shared}
+
+
+DOWNLOAD_JOBS: dict[str, dict] = {}
+
+
+class DownloadRequest(BaseModel):
+    source: str = Field(min_length=1, max_length=500)
+    slug: str | None = None
+    name: str | None = None
+
+
+@app.post("/api/decks/download")
+def start_deck_download(req: DownloadRequest, user: User):
+    from tarot.downloader.adapters import Template, find_adapter
+    from tarot.downloader.cli import download_deck
+
+    source = req.source.strip()
+    try:
+        adapter = find_adapter(source)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    if isinstance(adapter, Template) and not (req.slug or "").strip():
+        raise HTTPException(400, "URL templates need a deck slug")
+
+    job_id = secrets.token_hex(8)
+    job = {
+        "owner": user,
+        "source": source,
+        "slug": req.slug,
+        "name": req.name,
+        "completed": 0,
+        "failed": [],
+        "done": False,
+        "error": None,
+    }
+    DOWNLOAD_JOBS[job_id] = job
+
+    def on_start(slug: str, name: str) -> None:
+        job["slug"], job["name"] = slug, name
+
+    def on_card(index: int, ok: bool) -> None:
+        if ok:
+            job["completed"] += 1
+        else:
+            job["failed"].append(index)
+
+    def run() -> None:
+        try:
+            download_deck(
+                source,
+                user_decks_dir(user),
+                slug=req.slug or None,
+                name=req.name or None,
+                delay=0.5,
+                on_start=on_start,
+                on_card=on_card,
+            )
+        except BaseException as e:  # noqa: BLE001 — includes SystemExit from the CLI paths
+            job["error"] = str(e) or e.__class__.__name__
+        finally:
+            job["done"] = True
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job": job_id}
+
+
+@app.get("/api/decks/download/{job_id}")
+def deck_download_status(job_id: str, user: User):
+    job = DOWNLOAD_JOBS.get(job_id)
+    if not job or job["owner"] != user:
+        raise HTTPException(404, "job not found")
+    return {k: v for k, v in job.items() if k != "owner"} | {"total": 78}
 
 
 MAX_UPLOAD_BYTES = 300 * 1024 * 1024
