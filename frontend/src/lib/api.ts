@@ -77,7 +77,9 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
 }
 
 export const api = {
-	me: () => get<{ user: string }>('/api/me'),
+	me: () => get<{ user: string; interpretation: boolean }>('/api/me'),
+	interpret: (question: string | null, spread: string, cards: DrawnCard[]) =>
+		send<{ interpretation: string }>('POST', '/api/interpret', { question, spread, cards }),
 	cards: () => get<Card[]>('/api/cards'),
 	decks: () => get<DeckSummary[]>('/api/decks'),
 	spreads: () => get<Spread[]>('/api/spreads'),
@@ -87,7 +89,7 @@ export const api = {
 		send<{ slug: string; shared: boolean }>('POST', `/api/decks/${slug}/share`, { shared }),
 	readings: () => get<SavedReading[]>('/api/readings'),
 	reading: (id: number) => get<SavedReading>(`/api/readings/${id}`),
-	saveReading: (r: Reading) => send<SavedReading>('POST', '/api/readings', r),
+	saveReading: (r: Reading & { notes?: string }) => send<SavedReading>('POST', '/api/readings', r),
 	updateReading: (id: number, patch: { notes?: string; shared?: boolean }) =>
 		send<SavedReading>('PATCH', `/api/readings/${id}`, patch),
 	deleteReading: (id: number) => send<{ deleted: number }>('DELETE', `/api/readings/${id}`),

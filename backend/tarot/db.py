@@ -44,11 +44,11 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return d
 
 
-def save_reading(owner: str, question: str | None, deck: str, spread: str, cards: list) -> dict:
+def save_reading(owner: str, question: str | None, deck: str, spread: str, cards: list, notes: str = "") -> dict:
     with connect() as con:
         cur = con.execute(
-            "INSERT INTO readings (owner, created_at, question, deck, spread, cards) VALUES (?,?,?,?,?,?)",
-            (owner, int(time.time()), question, deck, spread, json.dumps(cards)),
+            "INSERT INTO readings (owner, created_at, question, deck, spread, cards, notes) VALUES (?,?,?,?,?,?,?)",
+            (owner, int(time.time()), question, deck, spread, json.dumps(cards), notes),
         )
         row = con.execute("SELECT * FROM readings WHERE id = ?", (cur.lastrowid,)).fetchone()
         return _row_to_dict(row)

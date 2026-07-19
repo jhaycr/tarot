@@ -1,6 +1,8 @@
 import json
 import os
 import secrets
+
+import httpx
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
@@ -11,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import db
+from tarot import db, interpret as interp
 from tarot.auth import current_user
 from tarot.cards import CARDS
 from tarot.decks import discover_decks, set_deck_shared
@@ -42,7 +44,7 @@ def health():
 
 @app.get("/api/me")
 def me(user: User):
-    return {"user": user}
+    return {"user": user, "interpretation": interp.config() is not None}
 
 
 @app.get("/api/cards")
@@ -136,11 +138,31 @@ def draw(req: DrawRequest, user: User):
     return {"deck": req.deck, "spread": req.spread, "question": req.question, "cards": drawn}
 
 
+class InterpretRequest(BaseModel):
+    question: str | None = None
+    spread: str
+    cards: list[dict]
+
+
+@app.post("/api/interpret")
+async def interpret_reading(req: InterpretRequest, user: User):
+    if interp.config() is None:
+        raise HTTPException(404, "LLM interpretation is not configured")
+    spread = SPREADS_BY_SLUG.get(req.spread)
+    spread_name = spread["name"] if spread else req.spread
+    try:
+        text = await interp.interpret(req.question, spread_name, req.cards)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"LLM endpoint error: {e}")
+    return {"interpretation": text}
+
+
 class SaveReadingRequest(BaseModel):
     deck: str
     spread: str
     question: str | None = None
     cards: list[dict]
+    notes: str = ""
 
 
 class UpdateReadingRequest(BaseModel):
@@ -155,7 +177,7 @@ def readings_list(user: User):
 
 @app.post("/api/readings")
 def readings_save(req: SaveReadingRequest, user: User):
-    return db.save_reading(user, req.question, req.deck, req.spread, req.cards)
+    return db.save_reading(user, req.question, req.deck, req.spread, req.cards, notes=req.notes)
 
 
 @app.get("/api/readings/{reading_id}")

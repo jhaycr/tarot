@@ -12,12 +12,17 @@
 	let selected = $state<number | null>(null);
 	let savedId = $state<number | null>(null);
 	let saving = $state(false);
+	let llmEnabled = $state(false);
+	let interpretation = $state('');
+	let interpreting = $state(false);
+	let interpretError = $state('');
 
 	$effect(() => {
 		if (!reading) goto('/');
 		else {
 			api.decks().then((d) => (decks = d));
 			cardMeta().then((c) => (meta = c));
+			api.me().then((m) => (llmEnabled = m.interpretation));
 		}
 	});
 
@@ -46,10 +51,25 @@
 		if (!reading || savedId) return;
 		saving = true;
 		try {
-			const saved = await api.saveReading(reading);
+			const notes = interpretation ? `AI interpretation:\n${interpretation}` : '';
+			const saved = await api.saveReading({ ...reading, notes });
 			savedId = saved.id;
 		} finally {
 			saving = false;
+		}
+	}
+
+	async function interpret() {
+		if (!reading || interpreting) return;
+		interpreting = true;
+		interpretError = '';
+		try {
+			const res = await api.interpret(reading.question, reading.spread, reading.cards);
+			interpretation = res.interpretation;
+		} catch (e) {
+			interpretError = String(e);
+		} finally {
+			interpreting = false;
 		}
 	}
 </script>
@@ -116,6 +136,22 @@
 				<p class="dim">{drawn.position.name} — {drawn.position.meaning}</p>
 				{#if meaning(drawn)}
 					<p class="meaning">{meaning(drawn)}</p>
+				{/if}
+			</aside>
+		{/if}
+
+		{#if llmEnabled && allFlipped}
+			<aside class="interpretation">
+				{#if interpretation}
+					<h2>Interpretation</h2>
+					{#each interpretation.split('\n\n') as para, i (i)}
+						<p>{para}</p>
+					{/each}
+				{:else}
+					<button onclick={interpret} disabled={interpreting}>
+						{interpreting ? 'Consulting the cards…' : '✶ Interpret this reading'}
+					</button>
+					{#if interpretError}<p class="error">{interpretError}</p>{/if}
 				{/if}
 			</aside>
 		{/if}
@@ -207,6 +243,24 @@
 
 	.dim {
 		color: var(--text-dim);
+	}
+
+	.interpretation {
+		margin: 2rem auto 0;
+		max-width: 40rem;
+		text-align: center;
+	}
+
+	.interpretation h2 {
+		text-align: left;
+	}
+
+	.interpretation p {
+		text-align: left;
+	}
+
+	.error {
+		color: var(--danger);
 	}
 
 	@media (max-width: 640px) {
