@@ -1,1 +1,2 @@
 CLAUDE.md filter=git-crypt diff=git-crypt
+docs/handoffs/** filter=git-crypt diff=git-crypt
