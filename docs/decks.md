@@ -50,6 +50,12 @@ cards than the deck holds is rejected.
 A user's own deck wins slug collisions. Decks are discovered live — drop a
 folder in and reload, no restart needed.
 
+**Storage dedupe**: identical card images across decks (e.g. the same deck
+downloaded by several users) are stored once under `$TAROT_DATA_DIR/objects/`
+(content-addressed by SHA-256) and hardlinked into each deck folder. This
+happens automatically after downloads/uploads and at startup; deleting a deck
+never affects another, and unreferenced objects are pruned.
+
 ## Downloading with tarot-dl
 
 ```bash

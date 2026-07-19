@@ -18,13 +18,18 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import crypto, db, interpret as interp
+from tarot import crypto, db, dedupe, interpret as interp
 from tarot.auth import current_user, is_admin
 from tarot.cards import CARDS
 from tarot.decks import IMAGE_EXTS, discover_decks, set_deck_shared, user_decks_dir
 from tarot.spreads import SPREADS, SPREADS_BY_SLUG
 
 app = FastAPI(title="Tarotarium", docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+
+@app.on_event("startup")
+def _dedupe_existing() -> None:
+    threading.Thread(target=dedupe.dedupe_all, daemon=True).start()
 
 IMAGE_CACHE = {"Cache-Control": "public, max-age=604800"}
 
@@ -175,7 +180,7 @@ def start_deck_download(req: DownloadRequest, user: User):
 
     def run() -> None:
         try:
-            download_deck(
+            deck_dir = download_deck(
                 source,
                 user_decks_dir(user),
                 slug=req.slug or None,
@@ -184,6 +189,7 @@ def start_deck_download(req: DownloadRequest, user: User):
                 on_start=on_start,
                 on_card=on_card,
             )
+            dedupe.dedupe_deck(deck_dir)
         except BaseException as e:  # noqa: BLE001 — includes SystemExit from the CLI paths
             job["error"] = str(e) or e.__class__.__name__
         finally:
@@ -259,6 +265,7 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
     (dest / "manifest.yaml").write_text(
         yaml.safe_dump({"name": name, "attribution": f"Uploaded by {user}"}, sort_keys=False, allow_unicode=True)
     )
+    dedupe.dedupe_deck(dest)
     return {"slug": slug, "count": len(mapping), "majors_only": len(mapping) == 22}
 
 

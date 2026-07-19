@@ -149,7 +149,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        download_deck(
+        deck_dir = download_deck(
             args.source,
             args.dest or user_decks_dir(args.user),
             slug=args.slug,
@@ -158,6 +158,11 @@ def main() -> None:
             force=args.force,
             max_width=args.max_width,
         )
+        from tarot.dedupe import dedupe_deck
+
+        shared = dedupe_deck(deck_dir)
+        if shared:
+            print(f"{shared} images deduplicated against existing decks")
     except (RuntimeError, httpx.HTTPError) as e:
         raise SystemExit(f"error: {e}")
 
