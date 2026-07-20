@@ -21,13 +21,11 @@
 	let interpretError = $state('');
 	let personas = $state<Persona[]>([]);
 	let hasCustom = $state(false);
-	let spreads = $state<import('$lib/api').Spread[]>([]);
 
 	$effect(() => {
 		if (!reading) goto('/');
 		else {
 			api.decks().then((d) => (decks = d));
-			api.spreads().then((s) => (spreads = s));
 			cardMeta().then((c) => (meta = c));
 			api.me().then((m) => {
 				llmEnabled = m.interpretation;
@@ -44,7 +42,6 @@
 	});
 
 	const deckInfo = $derived(decks.find((d) => d.slug === reading?.deck));
-	const spreadInfo = $derived(spreads.find((s) => s.slug === reading?.spread));
 	const allFlipped = $derived(flips.every(Boolean));
 	const nextIdx = $derived(flips.indexOf(false));
 	const cols = $derived(reading ? Math.max(...reading.cards.map((c) => c.position.col)) : 1);
@@ -116,19 +113,9 @@
 			<div>
 				{#if reading.question}<h1>“{reading.question}”</h1>{/if}
 				<p class="dim">
-					{deckInfo?.name ?? reading.deck}
-					{#if spreadInfo}· {spreadInfo.name}{/if} · tap the glowing card to continue · hover a
-					revealed card for the gist, tap it for the full meaning
+					{deckInfo?.name ?? reading.deck} · tap the glowing card to continue · hover a revealed
+					card for the gist, tap it for the full meaning
 				</p>
-				{#if spreadInfo?.attribution}
-					<p class="attrib">
-						Spread from
-						<a href={spreadInfo.attribution.url} target="_blank" rel="noreferrer"
-							>{spreadInfo.attribution.source}</a
-						>
-						by {spreadInfo.attribution.author} · {spreadInfo.attribution.license}
-					</p>
-				{/if}
 			</div>
 			<div class="actions">
 				{#if !allFlipped}
@@ -361,12 +348,6 @@
 
 	.dim {
 		color: var(--text-dim);
-	}
-
-	.attrib {
-		color: var(--text-dim);
-		font-size: 0.75rem;
-		margin: 0.2rem 0 0;
 	}
 
 	.interpretation {

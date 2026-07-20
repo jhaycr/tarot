@@ -1,15 +1,6 @@
-"""Spread definitions. Positions carry layout hints (col/row) for the frontend grid.
+"""Spread definitions. Positions carry layout hints (col/row) for the frontend grid."""
 
-The three below are hand-tuned (the Celtic Cross crossing card especially).
-Additional spreads are imported from the TarotSchema codex — regenerate with
-`python tools/import_tarotschema.py`; their prose is CC-BY-4.0 by Tarotsmith,
-so imported spreads carry an `attribution` block that the UI displays.
-"""
-
-import json
-from pathlib import Path
-
-BUILTIN_SPREADS = [
+SPREADS = [
     {
         "slug": "single",
         "name": "Single Card",
@@ -46,24 +37,5 @@ BUILTIN_SPREADS = [
         ],
     },
 ]
-
-def _load_imported() -> list[dict]:
-    path = Path(__file__).parent / "data" / "spreads_tarotschema.json"
-    if not path.is_file():
-        return []
-    doc = json.loads(path.read_text())
-    attribution = doc.get("attribution")
-    spreads = []
-    for s in doc.get("spreads", []):
-        if s["slug"] in {b["slug"] for b in BUILTIN_SPREADS}:
-            continue  # never shadow a hand-tuned layout
-        spreads.append({**s, "attribution": attribution})
-    return spreads
-
-
-IMPORTED_SPREADS = _load_imported()
-
-# built-ins first (the everyday spreads), then imported ones by card count
-SPREADS = BUILTIN_SPREADS + sorted(IMPORTED_SPREADS, key=lambda s: (len(s["positions"]), s["name"]))
 
 SPREADS_BY_SLUG = {s["slug"]: s for s in SPREADS}

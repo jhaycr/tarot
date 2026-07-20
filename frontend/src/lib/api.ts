@@ -44,21 +44,11 @@ export interface SpreadPosition {
 	cross?: boolean;
 }
 
-export interface SpreadAttribution {
-	source: string;
-	author: string;
-	url: string;
-	license: string;
-}
-
 export interface Spread {
 	slug: string;
 	name: string;
 	description: string;
 	positions: SpreadPosition[];
-	difficulty?: string | null;
-	imported?: boolean;
-	attribution?: SpreadAttribution;
 }
 
 export interface DrawnCard {

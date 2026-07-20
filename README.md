@@ -22,10 +22,8 @@ with personas you can edit or replace.
 
 ## Features
 
-- **Readings** — 21 spreads (single, three-card and Celtic Cross hand-tuned,
-  plus 18 imported from the [TarotSchema codex](https://github.com/TarotSchema/codex));
-  tap-to-flip cards; optional reversals with an admin-set reversal chance;
-  server-side CSPRNG shuffles
+- **Readings** — single, three-card, and Celtic Cross spreads; tap-to-flip
+  cards; optional reversals; server-side CSPRNG shuffles
 - **Decks** — drop-in deck folders; bundled public-domain Rider–Waite–Smith
   (1909 scans via Wikimedia Commons); per-user decks with instance sharing
 - **Meanings** — upright and reversed keywords for all 78 cards, plus the full
@@ -112,9 +110,3 @@ docker run -p 8000:8000 -v ./data:/data tarotarium
 [MIT](LICENSE). Bundled Rider–Waite–Smith card images are public domain
 (Pamela Colman Smith, 1909; scans via Wikimedia Commons). The default "Alice"
 persona prompt is adapted from the project owner's own prompt library.
-
-Imported spread definitions come from the
-[TarotSchema codex](https://github.com/TarotSchema/codex) by Jeremy Lampkin /
-Tarotsmith — schema structure MIT, spread text CC-BY-4.0. The app displays this
-attribution wherever an imported spread is used; refresh the data with
-`python tools/import_tarotschema.py`.
