@@ -39,6 +39,9 @@ suits:                          # optional deck-specific suit names, shown with 
   Cups: Flow
   Swords: Breath
   Pentacles: Grounding
+majors:                         # optional deck-specific major arcana names, keyed by
+  The Fool: Spore               # the canonical RWS name; shown the same way, e.g.
+  The Magician: Alchemist       # "Spore (The Fool)". Unknown keys are ignored.
 ```
 
 **Majors-only decks are supported**: a deck with exactly cards `00`–`21` is

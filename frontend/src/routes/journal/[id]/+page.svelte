@@ -28,6 +28,8 @@
 		cardMeta().then((c) => (meta = c));
 	});
 
+	const viewDeckInfo = $derived(decks.find((d) => d.slug === viewDeck));
+
 	const compatibleDecks = $derived.by(() => {
 		if (!reading) return [];
 		// readings containing deck-specific extra cards can't be re-skinned
@@ -161,7 +163,7 @@
 						loading="lazy"
 					/>
 					<small class="pos">{drawn.position.name}</small>
-					<small>{deckCardName(drawn.card.name, decks.find((d) => d.slug === viewDeck)?.suit_names)}{drawn.reversed ? ' (rev)' : ''}</small>
+					<small>{deckCardName(drawn.card.name, viewDeckInfo)}{drawn.reversed ? ' (rev)' : ''}</small>
 				</button>
 			{/each}
 		</div>
@@ -169,12 +171,7 @@
 
 	{#if selected !== null}
 		{@const sel = reading.cards[selected]}
-		<CardDetail
-			drawn={sel}
-			{meta}
-			suitNames={decks.find((d) => d.slug === viewDeck)?.suit_names}
-			onZoom={() => (zoomed = sel)}
-		/>
+		<CardDetail drawn={sel} {meta} renames={viewDeckInfo} onZoom={() => (zoomed = sel)} />
 	{/if}
 
 	{#if reading.yours}

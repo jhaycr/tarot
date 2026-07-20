@@ -13,6 +13,8 @@ from pathlib import Path
 
 import yaml
 
+from tarot.cards import MAJORS as MAJOR_NAMES
+
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
 
@@ -43,6 +45,8 @@ class Deck:
     shared: bool = False
     # optional deck-specific suit names, e.g. {"Wands": "Vitality"}
     suit_names: dict[str, str] = field(default_factory=dict)
+    # optional deck-specific major arcana names, e.g. {"The Fool": "Spore"}
+    major_names: dict[str, str] = field(default_factory=dict)
     cards: dict[int, Path] = field(default_factory=dict)
     # deck-specific cards beyond the canonical 78 (e.g. invented majors),
     # addressed as index 78+position: [(index, display name, path), ...]
@@ -84,6 +88,11 @@ def _load_deck(deck_path: Path, owner: str | None = None) -> Deck | None:
             k: str(v)
             for k, v in (manifest.get("suits") or {}).items()
             if k in ("Wands", "Cups", "Swords", "Pentacles") and v
+        },
+        major_names={
+            k: str(v)
+            for k, v in (manifest.get("majors") or {}).items()
+            if k in MAJOR_NAMES and v
         },
     )
     cards_dir = deck_path / "cards"

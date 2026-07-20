@@ -9,7 +9,8 @@
 		cross = false,
 		next = false,
 		keywords = null,
-		showTip = true
+		showTip = true,
+		displayName = null
 	}: {
 		drawn: DrawnCard;
 		deck: string;
@@ -19,7 +20,10 @@
 		next?: boolean;
 		keywords?: string | null;
 		showTip?: boolean;
+		displayName?: string | null;
 	} = $props();
+
+	const name = $derived(displayName ?? drawn.card.name);
 </script>
 
 <button
@@ -35,7 +39,7 @@
 			flipped = true;
 		}
 	}}
-	aria-label={flipped ? drawn.card.name : `Reveal ${drawn.position.name}`}
+	aria-label={flipped ? name : `Reveal ${drawn.position.name}`}
 >
 	<div class="inner">
 		<div class="face back">
@@ -58,6 +62,9 @@
 		<span class="tip" role="tooltip">
 			<strong>{drawn.position.name}</strong> — {drawn.position.meaning}
 			{#if keywords}<span class="kw">{keywords}</span>{/if}
+			{#if displayName && displayName !== drawn.card.name}
+				<span class="alt">{displayName} ({drawn.card.name})</span>
+			{/if}
 		</span>
 	{/if}
 </button>
@@ -172,6 +179,13 @@
 		display: block;
 		margin-top: 0.25rem;
 		color: var(--gold-bright);
+	}
+
+	.tip .alt {
+		display: block;
+		margin-top: 0.15rem;
+		color: var(--text-dim);
+		font-size: 0.75rem;
 	}
 
 	.card:hover .tip,

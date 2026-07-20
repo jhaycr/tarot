@@ -28,6 +28,7 @@ export interface DeckSummary {
 	majors_only: boolean;
 	extras: DeckExtra[];
 	suit_names: Record<string, string>;
+	major_names: Record<string, string>;
 	missing: number[];
 	has_back: boolean;
 	owner: string | null;
@@ -176,10 +177,22 @@ export async function cardMeta(): Promise<Card[]> {
 	return cardsCache;
 }
 
-/** Apply a deck's suit renames: "Ace of Wands" -> "Ace of Vitality". */
-export function deckCardName(name: string, suitNames?: Record<string, string>): string {
-	if (!suitNames) return name;
-	for (const [real, renamed] of Object.entries(suitNames)) {
+export interface DeckRenames {
+	suit_names?: Record<string, string>;
+	major_names?: Record<string, string>;
+}
+
+/**
+ * Apply a deck's renames: major arcana get a full replacement name
+ * ("The Fool" -> "Spore"), minors get their suit swapped
+ * ("Ace of Wands" -> "Ace of Vitality").
+ */
+export function deckCardName(name: string, deck?: DeckRenames): string {
+	if (!deck) return name;
+	const major = deck.major_names?.[name];
+	if (major) return major;
+	if (!deck.suit_names) return name;
+	for (const [real, renamed] of Object.entries(deck.suit_names)) {
 		if (name.endsWith(` of ${real}`)) return name.slice(0, -real.length) + renamed;
 	}
 	return name;

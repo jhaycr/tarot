@@ -16,6 +16,11 @@
 	const ROMAN = ['0', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII',
 		'XIII', 'XIV', 'XV', 'XVI', 'XVII', 'XVIII', 'XIX', 'XX', 'XXI'];
 
+	function displayName(card: Card): string {
+		const renamed = deckCardName(card.name, deck);
+		return renamed === card.name ? card.name : `${renamed} (${card.name})`;
+	}
+
 	function numeral(card: Card): string {
 		if (card.arcana === 'major') return ROMAN[card.index];
 		if (card.number == null) return '';
@@ -35,7 +40,7 @@
 			secs.push({
 				id: 'majors',
 				title: 'Major Arcana',
-				cards: majors.map((c) => ({ index: c.index, name: c.name, numeral: numeral(c) }))
+				cards: majors.map((c) => ({ index: c.index, name: displayName(c), numeral: numeral(c) }))
 			});
 		for (const suit of ['Wands', 'Cups', 'Swords', 'Pentacles']) {
 			const suited = cards.filter((c) => c.suit === suit && has(c.index));
@@ -46,7 +51,7 @@
 					title: renamed ? `${renamed} (${suit})` : suit,
 					cards: suited.map((c) => ({
 						index: c.index,
-						name: deckCardName(c.name, deck?.suit_names),
+						name: deckCardName(c.name, deck),
 						numeral: numeral(c)
 					}))
 				});

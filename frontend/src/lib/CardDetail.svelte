@@ -1,20 +1,20 @@
 <script lang="ts">
-	import { deckCardName, type Card, type DrawnCard } from '$lib/api';
+	import { deckCardName, type Card, type DeckRenames, type DrawnCard } from '$lib/api';
 
 	let {
 		drawn,
 		meta,
-		suitNames = undefined,
+		renames = undefined,
 		onZoom = null
 	}: {
 		drawn: DrawnCard;
 		meta: Card[];
-		suitNames?: Record<string, string>;
+		renames?: DeckRenames;
 		onZoom?: (() => void) | null;
 	} = $props();
 
 	const card = $derived(meta.find((c) => c.index === drawn.card.index));
-	const display = $derived(deckCardName(drawn.card.name, suitNames));
+	const display = $derived(deckCardName(drawn.card.name, renames));
 	const keywords = $derived(
 		drawn.reversed ? card?.reversed_meaning : card?.upright
 	);

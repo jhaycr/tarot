@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { api, cardMeta, type Card as CardType, type DeckSummary, type DrawnCard, type Persona } from '$lib/api';
+	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type Persona } from '$lib/api';
 	import { prefPersona } from '$lib/prefs.svelte';
 	import Card from '$lib/Card.svelte';
 	import CardDetail from '$lib/CardDetail.svelte';
@@ -56,6 +56,10 @@
 	function keywordsFor(drawn: DrawnCard): string | null {
 		const m = meta.find((c) => c.index === drawn.card.index);
 		return (drawn.reversed ? m?.reversed_meaning : m?.upright) ?? null;
+	}
+
+	function cardDisplayName(drawn: DrawnCard): string {
+		return deckCardName(drawn.card.name, deckInfo);
 	}
 
 	function slotClick(i: number) {
@@ -142,6 +146,7 @@
 									<Card
 										{drawn}
 										deck={reading.deck}
+										displayName={cardDisplayName(drawn)}
 										hasBack={deckInfo?.has_back ?? false}
 										cross={drawn.position.cross ?? false}
 										next={i === nextIdx}
@@ -162,7 +167,7 @@
 											onclick={(e) => e.stopPropagation()}
 										>
 											<button class="close" onclick={() => (selected = null)} aria-label="Close">✕</button>
-											<CardDetail {drawn} {meta} suitNames={deckInfo?.suit_names} onZoom={() => (zoomed = drawn)} />
+											<CardDetail {drawn} {meta} renames={deckInfo} onZoom={() => (zoomed = drawn)} />
 										</div>
 									{/if}
 								</div>
