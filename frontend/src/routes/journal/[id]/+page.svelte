@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api, cardMeta, type Card as CardType, type DeckSummary, type DrawnCard, type SavedReading } from '$lib/api';
+	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type SavedReading } from '$lib/api';
 	import CardDetail from '$lib/CardDetail.svelte';
 	import { prefJournalLayout } from '$lib/prefs.svelte';
 
@@ -161,7 +161,7 @@
 						loading="lazy"
 					/>
 					<small class="pos">{drawn.position.name}</small>
-					<small>{drawn.card.name}{drawn.reversed ? ' (rev)' : ''}</small>
+					<small>{deckCardName(drawn.card.name, decks.find((d) => d.slug === viewDeck)?.suit_names)}{drawn.reversed ? ' (rev)' : ''}</small>
 				</button>
 			{/each}
 		</div>
@@ -169,7 +169,12 @@
 
 	{#if selected !== null}
 		{@const sel = reading.cards[selected]}
-		<CardDetail drawn={sel} {meta} onZoom={() => (zoomed = sel)} />
+		<CardDetail
+			drawn={sel}
+			{meta}
+			suitNames={decks.find((d) => d.slug === viewDeck)?.suit_names}
+			onZoom={() => (zoomed = sel)}
+		/>
 	{/if}
 
 	{#if reading.yours}

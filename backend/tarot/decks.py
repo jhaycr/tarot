@@ -41,6 +41,8 @@ class Deck:
     license: str | None = None
     owner: str | None = None  # None = builtin/instance deck, visible to all
     shared: bool = False
+    # optional deck-specific suit names, e.g. {"Wands": "Vitality"}
+    suit_names: dict[str, str] = field(default_factory=dict)
     cards: dict[int, Path] = field(default_factory=dict)
     # deck-specific cards beyond the canonical 78 (e.g. invented majors),
     # addressed as index 78+position: [(index, display name, path), ...]
@@ -78,6 +80,11 @@ def _load_deck(deck_path: Path, owner: str | None = None) -> Deck | None:
         license=manifest.get("license"),
         owner=owner,
         shared=bool(manifest.get("shared")),
+        suit_names={
+            k: str(v)
+            for k, v in (manifest.get("suits") or {}).items()
+            if k in ("Wands", "Cups", "Swords", "Pentacles") and v
+        },
     )
     cards_dir = deck_path / "cards"
     if cards_dir.is_dir():

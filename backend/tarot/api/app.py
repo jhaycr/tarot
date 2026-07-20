@@ -96,6 +96,7 @@ def list_decks(user: User):
             "complete": d.complete,
             "majors_only": d.majors_only,
             "extras": [{"index": i, "name": n} for i, n, _ in d.extras],
+            "suit_names": d.suit_names,
             "missing": [] if d.complete else sorted(set(range(78)) - set(d.cards)),
             "has_back": d.back is not None,
             "owner": d.owner,

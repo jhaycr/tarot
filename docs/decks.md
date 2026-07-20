@@ -34,6 +34,11 @@ attribution: …                  # credit line (optional)
 license: …                      # e.g. "Public domain" (optional)
 back: back.jpg                  # card back override (optional; back.* is found automatically)
 shared: true                    # user decks only: visible to everyone on the instance
+suits:                          # optional deck-specific suit names, shown with the
+  Wands: Vitality               # canonical name as a parenthetical, e.g. "Vitality (Wands)"
+  Cups: Flow
+  Swords: Breath
+  Pentacles: Grounding
 ```
 
 **Majors-only decks are supported**: a deck with exactly cards `00`–`21` is

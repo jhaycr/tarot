@@ -162,7 +162,7 @@
 											onclick={(e) => e.stopPropagation()}
 										>
 											<button class="close" onclick={() => (selected = null)} aria-label="Close">✕</button>
-											<CardDetail {drawn} {meta} onZoom={() => (zoomed = drawn)} />
+											<CardDetail {drawn} {meta} suitNames={deckInfo?.suit_names} onZoom={() => (zoomed = drawn)} />
 										</div>
 									{/if}
 								</div>

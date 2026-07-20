@@ -27,6 +27,7 @@ export interface DeckSummary {
 	complete: boolean;
 	majors_only: boolean;
 	extras: DeckExtra[];
+	suit_names: Record<string, string>;
 	missing: number[];
 	has_back: boolean;
 	owner: string | null;
@@ -173,4 +174,13 @@ let cardsCache: Card[] | null = null;
 export async function cardMeta(): Promise<Card[]> {
 	if (!cardsCache) cardsCache = await api.cards();
 	return cardsCache;
+}
+
+/** Apply a deck's suit renames: "Ace of Wands" -> "Ace of Vitality". */
+export function deckCardName(name: string, suitNames?: Record<string, string>): string {
+	if (!suitNames) return name;
+	for (const [real, renamed] of Object.entries(suitNames)) {
+		if (name.endsWith(` of ${real}`)) return name.slice(0, -real.length) + renamed;
+	}
+	return name;
 }

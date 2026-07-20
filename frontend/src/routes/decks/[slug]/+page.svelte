@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, type Card, type DeckSummary } from '$lib/api';
+	import { api, deckCardName, type Card, type DeckSummary } from '$lib/api';
 
 	const slug = $derived(page.params.slug!);
 
@@ -39,11 +39,16 @@
 			});
 		for (const suit of ['Wands', 'Cups', 'Swords', 'Pentacles']) {
 			const suited = cards.filter((c) => c.suit === suit && has(c.index));
+			const renamed = deck?.suit_names?.[suit];
 			if (suited.length)
 				secs.push({
 					id: suit.toLowerCase(),
-					title: suit,
-					cards: suited.map((c) => ({ index: c.index, name: c.name, numeral: numeral(c) }))
+					title: renamed ? `${renamed} (${suit})` : suit,
+					cards: suited.map((c) => ({
+						index: c.index,
+						name: deckCardName(c.name, deck?.suit_names),
+						numeral: numeral(c)
+					}))
 				});
 		}
 		if (deck?.extras.length)

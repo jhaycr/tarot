@@ -1,13 +1,20 @@
 <script lang="ts">
-	import type { Card, DrawnCard } from '$lib/api';
+	import { deckCardName, type Card, type DrawnCard } from '$lib/api';
 
 	let {
 		drawn,
 		meta,
+		suitNames = undefined,
 		onZoom = null
-	}: { drawn: DrawnCard; meta: Card[]; onZoom?: (() => void) | null } = $props();
+	}: {
+		drawn: DrawnCard;
+		meta: Card[];
+		suitNames?: Record<string, string>;
+		onZoom?: (() => void) | null;
+	} = $props();
 
 	const card = $derived(meta.find((c) => c.index === drawn.card.index));
+	const display = $derived(deckCardName(drawn.card.name, suitNames));
 	const keywords = $derived(
 		drawn.reversed ? card?.reversed_meaning : card?.upright
 	);
@@ -16,7 +23,8 @@
 
 <aside class="detail">
 	<h2>
-		{drawn.card.name}
+		{display}
+		{#if display !== drawn.card.name}<span class="real">({drawn.card.name})</span>{/if}
 		{#if drawn.reversed}<span class="rev">reversed</span>{/if}
 	</h2>
 	<p class="dim">{drawn.position.name} — {drawn.position.meaning}</p>
@@ -53,6 +61,13 @@
 
 	.meaning {
 		color: var(--gold-bright);
+	}
+
+	.real {
+		font-size: 0.85rem;
+		color: var(--text-dim);
+		font-weight: normal;
+		margin-left: 0.3rem;
 	}
 
 	.rev {
