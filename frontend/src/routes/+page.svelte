@@ -41,6 +41,15 @@
 	const hiddenDeckCount = $derived(decks.length - visibleDecks.length);
 	const selectedDeck = $derived(decks.find((d) => d.slug === prefDeck.value));
 
+	let showAllSpreads = $state(false);
+	const selectedSpread = $derived(spreads.find((s) => s.slug === prefSpread.value));
+	const visibleSpreads = $derived.by(() =>
+		showAllSpreads
+			? spreads
+			: spreads.filter((s) => !s.imported || s.slug === prefSpread.value)
+	);
+	const hiddenSpreadCount = $derived(spreads.length - visibleSpreads.length);
+
 	let includeExtras = $state(false);
 	$effect(() => {
 		includeExtras = localStorage.getItem(`tarot.extras.${prefDeck.value}`) === 'true';
@@ -101,7 +110,7 @@
 	<div class="field">
 		<span>Spread</span>
 		<div class="choices">
-			{#each spreads as spread (spread.slug)}
+			{#each visibleSpreads as spread (spread.slug)}
 				{@const deckCount = decks.find((d) => d.slug === prefDeck.value)?.count ?? 78}
 				{@const tooBig = spread.positions.length > deckCount}
 				<button
@@ -111,11 +120,30 @@
 					title={tooBig ? 'This deck has too few cards for this spread' : undefined}
 					onclick={() => (prefSpread.value = spread.slug)}
 				>
-					<strong>{spread.name}</strong>
+					<strong>
+						{spread.name}
+						{#if spread.difficulty}<small class="pill">{spread.difficulty}</small>{/if}
+					</strong>
 					<small>{spread.positions.length} {spread.positions.length === 1 ? 'card' : 'cards'} — {spread.description}</small>
 				</button>
 			{/each}
+			{#if hiddenSpreadCount > 0}
+				<button class="more" onclick={() => (showAllSpreads = true)}>
+					Show all spreads ({hiddenSpreadCount} more)
+				</button>
+			{:else if showAllSpreads}
+				<button class="more" onclick={() => (showAllSpreads = false)}>Show fewer</button>
+			{/if}
 		</div>
+		{#if selectedSpread?.attribution}
+			<small class="attrib">
+				Spread text from
+				<a href={selectedSpread.attribution.url} target="_blank" rel="noreferrer"
+					>{selectedSpread.attribution.source}</a
+				>
+				by {selectedSpread.attribution.author} · {selectedSpread.attribution.license}
+			</small>
+		{/if}
 	</div>
 
 	<div class="field">
@@ -261,6 +289,23 @@
 	.more {
 		color: var(--accent);
 		border-style: dashed;
+	}
+
+	.pill {
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		padding: 0.05rem 0.5rem;
+		margin-left: 0.5rem;
+		color: var(--text-dim);
+		font-size: 0.7rem;
+		text-transform: lowercase;
+	}
+
+	.attrib {
+		display: block;
+		margin-top: 0.5rem;
+		color: var(--text-dim);
+		font-size: 0.75rem;
 	}
 
 	.choice.deck img {
