@@ -96,7 +96,15 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
 }
 
 export const api = {
-	me: () => get<{ user: string; interpretation: boolean; is_admin: boolean }>('/api/me'),
+	me: () =>
+		get<{
+			user: string;
+			display_name: string;
+			interpretation: boolean;
+			is_admin: boolean;
+			authenticated: boolean;
+			logout_url: string | null;
+		}>('/api/me'),
 	uploadDeck: async (file: File, name: string) => {
 		const form = new FormData();
 		form.append('file', file);

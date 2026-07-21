@@ -19,7 +19,13 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from tarot import crypto, db, dedupe, importer, interpret as interp
-from tarot.auth import current_user, is_admin
+from tarot.auth import (
+    LOGOUT_URL,
+    current_user,
+    display_name,
+    is_admin,
+    is_authenticated,
+)
 from tarot.cards import CARDS
 from tarot.decks import IMAGE_EXTS, discover_decks, set_deck_shared, user_decks_dir
 from tarot.spreads import SPREADS, SPREADS_BY_SLUG
@@ -58,11 +64,15 @@ def health():
 
 
 @app.get("/api/me")
-def me(user: User):
+def me(request: Request, user: User):
+    authenticated = is_authenticated(request)
     return {
         "user": user,
+        "display_name": display_name(request),
         "interpretation": interp.config() is not None,
         "is_admin": is_admin(user),
+        "authenticated": authenticated,
+        "logout_url": LOGOUT_URL if authenticated else None,
     }
 
 

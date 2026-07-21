@@ -8,8 +8,12 @@
 	let { children } = $props();
 
 	let user = $state('');
+	let logoutUrl = $state<string | null>(null);
 	$effect(() => {
-		api.me().then((m) => (user = m.user));
+		api.me().then((m) => {
+			user = m.display_name;
+			logoutUrl = m.logout_url;
+		});
 	});
 
 	const links = [
@@ -37,7 +41,12 @@
 			{/each}
 		</nav>
 		{#if user}
-			<span class="user" title="Readings and decks are saved under this name">☾ {user}</span>
+			<span class="account">
+				<span class="user" title="Readings and decks are saved under this name">☾ {user}</span>
+				{#if logoutUrl}
+					<a class="logout" href={logoutUrl} data-sveltekit-reload title="Sign out">Log out</a>
+				{/if}
+			</span>
 		{/if}
 	</header>
 	<main>
@@ -82,10 +91,27 @@
 		border-bottom: 1px solid var(--gold);
 	}
 
-	.user {
+	.account {
 		margin-left: auto;
+		display: flex;
+		align-items: baseline;
+		gap: 0.9rem;
+	}
+
+	.user {
 		color: var(--text-dim);
 		font-size: 0.85rem;
+	}
+
+	.logout {
+		color: var(--text-dim);
+		font-size: 0.85rem;
+		border-bottom: 1px solid transparent;
+	}
+
+	.logout:hover {
+		color: var(--gold);
+		border-bottom-color: var(--gold);
 	}
 
 	@media (max-width: 480px) {
