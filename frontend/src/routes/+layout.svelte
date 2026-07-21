@@ -9,10 +9,12 @@
 
 	let user = $state('');
 	let logoutUrl = $state<string | null>(null);
+	let version = $state('');
 	$effect(() => {
 		api.me().then((m) => {
 			user = m.display_name;
 			logoutUrl = m.logout_url;
+			version = m.version;
 		});
 	});
 
@@ -34,7 +36,10 @@
 
 <div class="shell">
 	<header>
-		<a class="brand" href="/">✦ Tarotarium</a>
+		<a class="brand" href="/">
+			<span class="title">✦ Tarotarium</span>
+			{#if version}<span class="version">{version === 'dev' ? 'dev' : `v${version}`}</span>{/if}
+		</a>
 		<nav>
 			{#each links as link (link.href)}
 				<a href={link.href} class:active={isActive(link.href)}>{link.label}</a>
@@ -71,9 +76,22 @@
 	}
 
 	.brand {
+		display: inline-flex;
+		flex-direction: column;
+		line-height: 1.1;
+	}
+
+	.brand .title {
 		font-size: 1.3rem;
 		color: var(--gold-bright);
 		letter-spacing: 0.06em;
+	}
+
+	.brand .version {
+		font-size: 0.62rem;
+		color: var(--text-dim);
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
 	}
 
 	nav {

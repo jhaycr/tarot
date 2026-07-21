@@ -32,6 +32,10 @@ from tarot.spreads import SPREADS, SPREADS_BY_SLUG
 
 app = FastAPI(title="Tarotarium", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
+# Release version, threaded in from the git tag at image build time
+# (Dockerfile ARG -> ENV). Unset in local/dev builds -> "dev".
+VERSION = os.getenv("TAROT_VERSION", "dev")
+
 
 @app.on_event("startup")
 def _dedupe_existing() -> None:
@@ -60,7 +64,7 @@ def get_deck_or_404(slug: str, user: str):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "version": VERSION}
 
 
 @app.get("/api/me")
@@ -73,6 +77,7 @@ def me(request: Request, user: User):
         "is_admin": is_admin(user),
         "authenticated": authenticated,
         "logout_url": LOGOUT_URL if authenticated else None,
+        "version": VERSION,
     }
 
 

@@ -104,6 +104,7 @@ export const api = {
 			is_admin: boolean;
 			authenticated: boolean;
 			logout_url: string | null;
+			version: string;
 		}>('/api/me'),
 	uploadDeck: async (file: File, name: string) => {
 		const form = new FormData();
