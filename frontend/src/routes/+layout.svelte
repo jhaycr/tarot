@@ -10,6 +10,8 @@
 	let user = $state('');
 	let logoutUrl = $state<string | null>(null);
 	let version = $state('');
+	// Clean semver gets a "v" prefix; dev stamps (e.g. "dev-201ba30-dirty") print as-is.
+	let versionLabel = $derived(version ? (/^\d/.test(version) ? `v${version}` : version) : '');
 	$effect(() => {
 		api.me().then((m) => {
 			user = m.display_name;
@@ -38,7 +40,7 @@
 	<header>
 		<a class="brand" href="/">
 			<span class="title">✦ Tarotarium</span>
-			{#if version}<span class="version">{version === 'dev' ? 'dev' : `v${version}`}</span>{/if}
+			{#if versionLabel}<span class="version">{versionLabel}</span>{/if}
 		</a>
 		<nav>
 			{#each links as link (link.href)}
