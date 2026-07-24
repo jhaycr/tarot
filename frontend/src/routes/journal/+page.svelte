@@ -45,7 +45,10 @@
 					<small class="dim">
 						{fmtDate(r.created_at)} · {spreadName(r.spread)}
 						{#if !r.yours} · <span class="badge">{r.owner}</span>{/if}
-						{#if r.yours && r.shared} · <span class="badge shared">shared</span>{/if}
+						{#if r.yours && r.visibility === 'everyone'} · <span class="badge shared">everyone</span>
+						{:else if r.yours && r.visibility === 'specific'} ·
+							<span class="badge shared">shared with {r.shared_with.length}</span>
+						{/if}
 					</small>
 					{#if r.notes}<small class="notes">{r.notes.slice(0, 120)}</small>{/if}
 				</div>

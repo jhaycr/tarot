@@ -70,13 +70,22 @@ export interface Persona {
 	description: string;
 }
 
+export type Visibility = 'private' | 'specific' | 'everyone';
+
 export interface SavedReading extends Reading {
 	id: number;
 	owner: string;
 	created_at: number;
 	notes: string;
-	shared: boolean;
+	visibility: Visibility;
+	/** Who it's shared with. Only ever populated for readings you own. */
+	shared_with: string[];
 	yours: boolean;
+}
+
+export interface Person {
+	username: string;
+	display_name: string;
 }
 
 async function get<T>(url: string): Promise<T> {
@@ -173,8 +182,11 @@ export const api = {
 	readings: () => get<SavedReading[]>('/api/readings'),
 	reading: (id: number) => get<SavedReading>(`/api/readings/${id}`),
 	saveReading: (r: Reading & { notes?: string }) => send<SavedReading>('POST', '/api/readings', r),
-	updateReading: (id: number, patch: { notes?: string; shared?: boolean }) =>
+	updateReading: (id: number, patch: { notes?: string }) =>
 		send<SavedReading>('PATCH', `/api/readings/${id}`, patch),
+	users: () => get<Person[]>('/api/users'),
+	setSharing: (id: number, visibility: Visibility, grantees: string[] = []) =>
+		send<SavedReading>('PUT', `/api/readings/${id}/sharing`, { visibility, grantees }),
 	deleteReading: (id: number) => send<{ deleted: number }>('DELETE', `/api/readings/${id}`),
 	cardImage: (deck: string, index: number) => `/api/decks/${deck}/cards/${index}`,
 	backImage: (deck: string) => `/api/decks/${deck}/back`

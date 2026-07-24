@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type SavedReading } from '$lib/api';
 	import CardDetail from '$lib/CardDetail.svelte';
+	import VisibilitySelect from '$lib/VisibilitySelect.svelte';
 	import { prefJournalLayout } from '$lib/prefs.svelte';
 
 	const id = $derived(Number(page.params.id));
@@ -59,11 +60,6 @@
 		notesSaved = true;
 	}
 
-	async function toggleShared() {
-		if (!reading) return;
-		reading = await api.updateReading(reading.id, { shared: !reading.shared });
-	}
-
 	async function remove() {
 		if (!reading || !confirm('Delete this reading?')) return;
 		await api.deleteReading(reading.id);
@@ -91,7 +87,7 @@
 		</div>
 		{#if reading.yours}
 			<div class="actions">
-				<button onclick={toggleShared}>{reading.shared ? 'Unshare' : 'Share with instance'}</button>
+				<VisibilitySelect bind:reading />
 				<button class="danger" onclick={remove}>Delete</button>
 			</div>
 		{/if}

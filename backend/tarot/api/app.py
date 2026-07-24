@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import crypto, db, dedupe, importer, interpret as interp
+from tarot import crypto, db, dedupe, importer, interpret as interp, users
 from tarot.auth import (
     LOGOUT_URL,
     current_user,
@@ -52,7 +52,19 @@ PKT: dict[str, dict] = json.loads(
     (Path(__file__).parent.parent / "data" / "pkt.json").read_text()
 )
 
-User = Annotated[str, Depends(current_user)]
+def resolve_user(request: Request) -> str:
+    """Identity for the request, registering the caller on first sight.
+
+    Every route resolves identity through this one dependency, so the registry
+    stays complete without any route knowing about it. auth.py deliberately
+    stays free of database imports; the upsert belongs here instead.
+    """
+    user = current_user(request)
+    users.touch(user, display_name(request))
+    return user
+
+
+User = Annotated[str, Depends(resolve_user)]
 
 
 def get_deck_or_404(slug: str, user: str):
@@ -79,6 +91,15 @@ def me(request: Request, user: User):
         "logout_url": LOGOUT_URL if authenticated else None,
         "version": VERSION,
     }
+
+
+@app.get("/api/users")
+def users_list(user: User):
+    """People who can be picked as share recipients."""
+    return [
+        {"username": u["username"], "display_name": u["display_name"]}
+        for u in users.list_people()
+    ]
 
 
 @app.get("/api/cards")
@@ -428,6 +449,26 @@ def require_admin(user: str) -> None:
         raise HTTPException(403, "admin only")
 
 
+class UpdateUserRequest(BaseModel):
+    display_name: str | None = None
+    active: bool | None = None
+
+
+@app.get("/api/admin/users")
+def admin_users_list(user: User):
+    require_admin(user)
+    return users.list_all()
+
+
+@app.patch("/api/admin/users/{username}")
+def admin_user_update(username: str, req: UpdateUserRequest, user: User):
+    require_admin(user)
+    updated = users.update(username, display_name=req.display_name, active=req.active)
+    if not updated:
+        raise HTTPException(404, f"user '{username}' not found")
+    return updated
+
+
 @app.get("/api/settings/llm")
 def get_llm_settings(user: User):
     require_admin(user)
@@ -496,12 +537,22 @@ class SaveReadingRequest(BaseModel):
 
 class UpdateReadingRequest(BaseModel):
     notes: str | None = None
-    shared: bool | None = None
+
+
+class SharingRequest(BaseModel):
+    visibility: str
+    grantees: list[str] = Field(default_factory=list)
+
+
+def _reading_view(r: dict, user: str) -> dict:
+    """Only the owner sees who a reading is shared with."""
+    yours = r["owner"] == user
+    return {**r, "yours": yours, "shared_with": r["shared_with"] if yours else []}
 
 
 @app.get("/api/readings")
 def readings_list(user: User):
-    return [{**r, "yours": r["owner"] == user} for r in db.list_readings(user)]
+    return [_reading_view(r, user) for r in db.list_readings(user)]
 
 
 @app.post("/api/readings")
@@ -514,15 +565,35 @@ def readings_get(reading_id: int, user: User):
     r = db.get_reading(reading_id, user)
     if not r:
         raise HTTPException(404, "reading not found")
-    return {**r, "yours": r["owner"] == user}
+    return _reading_view(r, user)
 
 
 @app.patch("/api/readings/{reading_id}")
 def readings_update(reading_id: int, req: UpdateReadingRequest, user: User):
-    r = db.update_reading(reading_id, user, notes=req.notes, shared=req.shared)
+    r = db.update_reading(reading_id, user, notes=req.notes)
     if not r:
         raise HTTPException(404, "reading not found or not yours")
-    return {**r, "yours": True}
+    return _reading_view(r, user)
+
+
+@app.put("/api/readings/{reading_id}/sharing")
+def readings_set_sharing(reading_id: int, req: SharingRequest, user: User):
+    if req.visibility not in db.VISIBILITIES:
+        raise HTTPException(400, f"visibility must be one of {', '.join(db.VISIBILITIES)}")
+
+    grantees: list[str] = []
+    if req.visibility == db.SPECIFIC:
+        for g in dict.fromkeys(req.grantees):  # de-dupe, keep order
+            if g == user:
+                continue  # sharing with yourself is a no-op, not an error
+            if not users.is_grantable(g):
+                raise HTTPException(400, f"cannot share with '{g}'")
+            grantees.append(g)
+
+    r = db.set_sharing(reading_id, user, req.visibility, grantees)
+    if not r:
+        raise HTTPException(404, "reading not found or not yours")
+    return _reading_view(r, user)
 
 
 @app.delete("/api/readings/{reading_id}")

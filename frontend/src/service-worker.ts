@@ -7,7 +7,11 @@ const sw = self as unknown as ServiceWorkerGlobalScope;
 
 const APP_CACHE = `tarotarium-app-${version}`;
 const CARD_CACHE = 'tarotarium-cards';
-const RUNTIME_CACHE = 'tarotarium-runtime';
+// Versioned: it holds cached navigations, so an unversioned one can serve an
+// old app shell pointing at build assets that no longer exist. Card art
+// (CARD_CACHE) is deliberately not versioned — the images don't change, and
+// re-downloading a deck on every release would be wasteful.
+const RUNTIME_CACHE = `tarotarium-runtime-${version}`;
 const ASSETS = [...build, ...files];
 
 sw.addEventListener('install', (event) => {
@@ -26,7 +30,11 @@ sw.addEventListener('activate', (event) => {
 			.then((keys) =>
 				Promise.all(
 					keys
-						.filter((k) => k.startsWith('tarotarium-app-') && k !== APP_CACHE)
+						.filter(
+							(k) =>
+								(k.startsWith('tarotarium-app-') && k !== APP_CACHE) ||
+								(k.startsWith('tarotarium-runtime') && k !== RUNTIME_CACHE)
+						)
 						.map((k) => caches.delete(k))
 				)
 			)
