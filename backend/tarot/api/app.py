@@ -608,11 +608,29 @@ class SpaStaticFiles(StaticFiles):
 
     async def get_response(self, path, scope):
         try:
-            return await super().get_response(path, scope)
+            resp = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code == 404:
-                return await super().get_response("index.html", scope)
-            raise
+            if exc.status_code != 404:
+                raise
+            path, resp = "index.html", await super().get_response("index.html", scope)
+
+        # A bare "/" arrives as "." (normpath), which html=True resolves to
+        # index.html.
+        name = path.rsplit("/", 1)[-1]
+        if name in ("", "."):
+            name = "index.html"
+        if name in ("service-worker.js", "index.html"):
+            # MUST NOT be cached by any intermediary. A stale service worker is
+            # unrecoverable from the client: the browser's update check is
+            # answered from the edge cache, so it never learns a new one exists
+            # and keeps serving an app shell whose hashed assets are long gone.
+            # (Cloudflare edge-cached this one for 3 days and blanked the app
+            # for external users after v0.8.0 — 2026-07-24.)
+            resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        elif "/immutable/" in path:
+            # Content-hashed by the build; safe to cache hard.
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
 
 
 # Serve the built frontend (present in the container; absent in API-only dev).
