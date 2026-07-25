@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import crypto, db, dedupe, importer, interpret as interp, users
+from tarot import config as cfgfile, crypto, db, dedupe, importer, interpret as interp, users
 from tarot.auth import (
     LOGOUT_URL,
     current_user,
@@ -386,7 +386,9 @@ DEFAULT_REVERSAL_CHANCE = 25  # percent — "some": reversals stay meaningful be
 
 
 def reversal_chance() -> int:
-    stored = db.get_setting("reversal_chance")
+    stored = cfgfile.get("reading", "reversal_chance")
+    if stored is None:
+        stored = db.get_setting("reversal_chance")
     try:
         return max(0, min(100, int(stored)))
     except (TypeError, ValueError):
@@ -461,7 +463,7 @@ async def interpret_reading(req: InterpretRequest, user: User):
         text = await interp.interpret(req.question, spread_name, req.cards, system_prompt=prompt)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"LLM endpoint error: {e}")
-    return {"interpretation": text, "persona": req.persona or ("custom" if db.get_user_prompt(user) else interp.DEFAULT_PERSONA)}
+    return {"interpretation": text, "persona": req.persona or ("custom" if db.get_user_prompt(user) else interp.default_persona())}
 
 
 @app.get("/api/personas")
@@ -472,7 +474,7 @@ def list_personas(user: User):
             for slug, p in interp.PERSONAS.items()
         ],
         "has_custom": bool(db.get_user_prompt(user)),
-        "default": interp.DEFAULT_PERSONA,
+        "default": interp.default_persona(),
     }
 
 
@@ -527,20 +529,58 @@ def account(request: Request, user: User):
     }
 
 
+def _managed(section: str, *keys: str) -> list[str]:
+    """Settings the config file owns, so the UI can render them read-only."""
+    return [k for k in keys if cfgfile.has(section, k)]
+
+
 @app.get("/api/settings/llm")
 def get_llm_settings(user: User):
     require_admin(user)
+    managed = _managed("llm", "base_url", "model", "max_tokens")
+    if cfgfile.llm_api_key() is not None:
+        managed.append("api_key")
     return {
-        "base_url": db.get_setting("llm_base_url") or os.environ.get("TAROT_LLM_BASE_URL", ""),
-        "model": db.get_setting("llm_model") or os.environ.get("TAROT_LLM_MODEL", ""),
-        "api_key_set": bool(db.get_setting("llm_api_key") or os.environ.get("TAROT_LLM_API_KEY")),
-        "from_env": not db.get_setting("llm_base_url") and bool(os.environ.get("TAROT_LLM_BASE_URL")),
+        "base_url": cfgfile.get("llm", "base_url")
+        or db.get_setting("llm_base_url")
+        or os.environ.get("TAROT_LLM_BASE_URL", ""),
+        "model": cfgfile.get("llm", "model")
+        or db.get_setting("llm_model")
+        or os.environ.get("TAROT_LLM_MODEL", ""),
+        "api_key_set": bool(
+            cfgfile.llm_api_key()
+            or db.get_setting("llm_api_key")
+            or os.environ.get("TAROT_LLM_API_KEY")
+        ),
+        "from_env": not cfgfile.has("llm", "base_url")
+        and not db.get_setting("llm_base_url")
+        and bool(os.environ.get("TAROT_LLM_BASE_URL")),
+        "managed": managed,
+        "config_file": str(cfgfile.config_path()) if cfgfile.exists() else None,
+        "config_error": cfgfile.error() or None,
     }
+
+
+def _reject_managed(section: str, **fields) -> None:
+    """The config file is authoritative; saving over it would look like it
+    worked and then be ignored, so refuse instead."""
+    clashes = [
+        k
+        for k, v in fields.items()
+        if v is not None
+        and (cfgfile.llm_api_key() is not None if k == "api_key" else cfgfile.has(section, k))
+    ]
+    if clashes:
+        raise HTTPException(
+            409,
+            f"{', '.join(sorted(clashes))} managed by {cfgfile.config_path()} — edit the config file",
+        )
 
 
 @app.put("/api/settings/llm")
 def set_llm_settings(req: LlmSettingsRequest, user: User):
     require_admin(user)
+    _reject_managed("llm", base_url=req.base_url, model=req.model, api_key=req.api_key)
     if req.base_url is not None:
         db.set_setting("llm_base_url", req.base_url.strip())
     if req.model is not None:
@@ -557,12 +597,18 @@ class ReadingSettingsRequest(BaseModel):
 @app.get("/api/settings/reading")
 def get_reading_settings(user: User):
     require_admin(user)
-    return {"reversal_chance": reversal_chance(), "default": DEFAULT_REVERSAL_CHANCE}
+    return {
+        "reversal_chance": reversal_chance(),
+        "default": DEFAULT_REVERSAL_CHANCE,
+        "managed": _managed("reading", "reversal_chance"),
+        "config_file": str(cfgfile.config_path()) if cfgfile.exists() else None,
+    }
 
 
 @app.put("/api/settings/reading")
 def set_reading_settings(req: ReadingSettingsRequest, user: User):
     require_admin(user)
+    _reject_managed("reading", reversal_chance=req.reversal_chance)
     db.set_setting(
         "reversal_chance",
         "" if req.reversal_chance == DEFAULT_REVERSAL_CHANCE else str(req.reversal_chance),

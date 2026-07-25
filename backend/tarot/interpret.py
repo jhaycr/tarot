@@ -1,21 +1,25 @@
 """LLM reading interpretation via any OpenAI-compatible chat endpoint.
 
-Configure with:
+Configure in /data/config.yaml (see config.py — Ansible-managed, authoritative),
+in the admin UI, or with environment variables:
     TAROT_LLM_BASE_URL        e.g. http://ollama:11434/v1 or https://api.anthropic.com/v1
     TAROT_LLM_MODEL           e.g. llama3.1 or claude-haiku-4-5-20251001
     TAROT_LLM_API_KEY         optional bearer token
     TAROT_LLM_SYSTEM_PROMPT   optional instance-wide prompt, replaces the default persona
 
-Unset base URL disables the feature (the UI hides the button).
+Settings resolve config file > admin UI (DB) > environment. Unset base URL
+disables the feature (the UI hides the button).
 
 Prompt resolution for a reading: explicitly chosen persona ('custom' = the
-user's saved prompt) > user's saved custom prompt > instance override env >
+user's saved prompt) > user's saved custom prompt > instance override >
 the default built-in persona (Alice).
 """
 
 import os
 
 import httpx
+
+from tarot import config as cfgfile
 
 # Adapted from Josh's Claude Project prompt for tarot learning ("Alice").
 ALICE_PROMPT = """You are Alice, a 20-something nerd about fictional 'witchcraft' and expert in \
@@ -70,26 +74,59 @@ PERSONAS = {
     },
 }
 
-DEFAULT_PERSONA = "alice"
+BUILTIN_DEFAULT_PERSONA = "alice"
+DEFAULT_MAX_TOKENS = 900
+
+
+def default_persona() -> str:
+    name = cfgfile.get("interpretation", "default_persona", BUILTIN_DEFAULT_PERSONA)
+    return str(name) if str(name) in PERSONAS else BUILTIN_DEFAULT_PERSONA
+
+
+# Back-compat alias: several call sites read this as a plain value.
+DEFAULT_PERSONA = BUILTIN_DEFAULT_PERSONA
 
 
 def default_prompt() -> str:
-    return os.environ.get("TAROT_LLM_SYSTEM_PROMPT", "").strip() or PERSONAS[DEFAULT_PERSONA]["prompt"]
+    override = cfgfile.get("interpretation", "system_prompt")
+    if override and str(override).strip():
+        return str(override).strip()
+    env = os.environ.get("TAROT_LLM_SYSTEM_PROMPT", "").strip()
+    return env or PERSONAS[default_persona()]["prompt"]
 
 
 def config() -> dict | None:
-    """LLM connection: admin-saved settings (API key encrypted at rest) take
-    precedence over environment variables."""
+    """LLM connection, resolved config file > admin UI (DB) > environment.
+
+    The file wins so an Ansible-managed instance can't be quietly overridden
+    from the UI. The DB-stored key is encrypted at rest; a file-supplied one is
+    used as given.
+    """
     from tarot import crypto, db
 
-    base_url = (db.get_setting("llm_base_url") or os.environ.get("TAROT_LLM_BASE_URL", "")).rstrip("/")
+    file_url = cfgfile.get("llm", "base_url")
+    base_url = str(
+        file_url or db.get_setting("llm_base_url") or os.environ.get("TAROT_LLM_BASE_URL", "")
+    ).rstrip("/")
     if not base_url:
         return None
-    stored_key = db.get_setting("llm_api_key")
+
+    file_key = cfgfile.llm_api_key()
+    if file_key is None:
+        stored = db.get_setting("llm_api_key")
+        api_key = crypto.decrypt(stored) if stored else os.environ.get("TAROT_LLM_API_KEY", "")
+    else:
+        api_key = file_key
+
     return {
         "base_url": base_url,
-        "model": db.get_setting("llm_model") or os.environ.get("TAROT_LLM_MODEL", ""),
-        "api_key": crypto.decrypt(stored_key) if stored_key else os.environ.get("TAROT_LLM_API_KEY", ""),
+        "model": str(
+            cfgfile.get("llm", "model")
+            or db.get_setting("llm_model")
+            or os.environ.get("TAROT_LLM_MODEL", "")
+        ),
+        "api_key": api_key,
+        "max_tokens": int(cfgfile.get("llm", "max_tokens", DEFAULT_MAX_TOKENS)),
     }
 
 
@@ -138,7 +175,7 @@ async def interpret(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": describe_reading(question, spread_name, cards)},
                 ],
-                "max_tokens": 900,
+                "max_tokens": cfg["max_tokens"],
             },
         )
         resp.raise_for_status()

@@ -1,0 +1,118 @@
+"""Declarative instance config from a YAML file (Ansible-managed).
+
+Precedence for any setting is: **config file > admin UI (DB) > environment**.
+The file wins deliberately — the point of managing it from Ansible is that the
+deployed state is authoritative, so a stray click in the UI must not silently
+override it. Endpoints refuse to write settings the file owns, and the UI shows
+them as managed.
+
+Default location /data/config.yaml, overridable with TAROT_CONFIG_FILE. Absent
+file = everything falls through to the old DB/env behaviour, so this is purely
+additive.
+
+    llm:
+      base_url: https://openrouter.ai/api/v1
+      model: minimax/minimax-m2
+      api_key: "..."            # or api_key_env: TAROT_LLM_API_KEY
+      max_tokens: 900
+    reading:
+      reversal_chance: 25
+    interpretation:
+      default_persona: alice
+      system_prompt: |          # replaces the default persona's prompt
+        ...
+
+A malformed file is reported rather than fatal: the app keeps serving on the
+previous behaviour and surfaces the parse error through /api/settings/*, so a
+bad template shows up in the UI instead of taking the instance down.
+"""
+
+import os
+import threading
+from pathlib import Path
+
+import yaml
+
+from tarot.decks import data_dir
+
+_lock = threading.Lock()
+_cache: dict = {}
+_cache_key: tuple | None = None
+_error: str = ""
+
+
+def config_path() -> Path:
+    override = os.environ.get("TAROT_CONFIG_FILE", "").strip()
+    return Path(override) if override else data_dir() / "config.yaml"
+
+
+def _load() -> dict:
+    """Parse the file, re-reading when it changes on disk.
+
+    Keyed on (mtime, size) so an Ansible re-template takes effect without a
+    container restart.
+    """
+    global _cache, _cache_key, _error
+    path = config_path()
+    try:
+        st = path.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+
+    with _lock:
+        if key == _cache_key:
+            return _cache
+        if key is None:
+            _cache, _cache_key, _error = {}, None, ""
+            return _cache
+        try:
+            parsed = yaml.safe_load(path.read_text()) or {}
+            if not isinstance(parsed, dict):
+                raise ValueError("top level must be a mapping")
+            _cache, _error = parsed, ""
+        except (OSError, yaml.YAMLError, ValueError) as exc:
+            # Keep serving; make the problem visible instead.
+            _cache, _error = {}, f"{path}: {exc}"
+        _cache_key = key
+        return _cache
+
+
+def section(name: str) -> dict:
+    value = _load().get(name)
+    return value if isinstance(value, dict) else {}
+
+
+def get(name: str, key: str, default=None):
+    """A config value, or `default` when unset. Empty string counts as unset so
+    a blank template line doesn't override anything."""
+    value = section(name).get(key, None)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    return value
+
+
+def has(name: str, key: str) -> bool:
+    """Whether the file owns this setting (and so the UI must not write it)."""
+    return get(name, key) is not None
+
+
+def error() -> str:
+    """Parse error from the last load, or "" when the file is fine/absent."""
+    _load()
+    return _error
+
+
+def exists() -> bool:
+    return config_path().is_file()
+
+
+def llm_api_key() -> str | None:
+    """Inline value, or the named environment variable's value."""
+    inline = get("llm", "api_key")
+    if inline:
+        return str(inline)
+    env_name = get("llm", "api_key_env")
+    if env_name:
+        return os.environ.get(str(env_name), "")
+    return None

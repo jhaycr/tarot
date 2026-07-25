@@ -14,9 +14,15 @@
 	let llmFromEnv = $state(false);
 	let llmSaved = $state(true);
 	let llmError = $state('');
+	let llmManaged = $state<string[]>([]);
+	let configFile = $state<string | null>(null);
+	let configError = $state<string | null>(null);
 
 	let reversalChance = $state(25);
 	let reversalSaved = $state(true);
+	let reversalManaged = $state(false);
+
+	const managed = (f: string) => llmManaged.includes(f);
 
 	$effect(() => {
 		api.getPrompt().then((r) => {
@@ -27,7 +33,10 @@
 			isAdmin = m.is_admin;
 			if (m.is_admin) {
 				refreshLlm();
-				api.getReadingSettings().then((s) => (reversalChance = s.reversal_chance));
+				api.getReadingSettings().then((s) => {
+					reversalChance = s.reversal_chance;
+					reversalManaged = s.managed.includes('reversal_chance');
+				});
 			}
 		});
 	});
@@ -44,19 +53,24 @@
 		llmModel = s.model;
 		llmKeySet = s.api_key_set;
 		llmFromEnv = s.from_env;
+		llmManaged = s.managed;
+		configFile = s.config_file;
+		configError = s.config_error;
 	}
 
 	async function saveLlm() {
 		llmError = '';
 		try {
+			// Don't send fields the config file owns; the API rejects them.
 			const s = await api.setLlmSettings({
-				base_url: llmBaseUrl,
-				model: llmModel,
-				...(llmApiKey ? { api_key: llmApiKey } : {})
+				...(managed('base_url') ? {} : { base_url: llmBaseUrl }),
+				...(managed('model') ? {} : { model: llmModel }),
+				...(llmApiKey && !managed('api_key') ? { api_key: llmApiKey } : {})
 			});
 			llmApiKey = '';
 			llmKeySet = s.api_key_set;
 			llmFromEnv = s.from_env;
+			llmManaged = s.managed;
 			llmSaved = true;
 		} catch (e) {
 			llmError = String(e);
@@ -91,13 +105,18 @@
 					step="5"
 					bind:value={reversalChance}
 					oninput={() => (reversalSaved = false)}
+					disabled={reversalManaged}
 				/>
 				<strong>{reversalChance}%</strong>
 			</span>
 		</label>
-		<button onclick={saveReversal} disabled={reversalSaved}>
-			{reversalSaved ? 'Saved' : 'Save'}
-		</button>
+		{#if reversalManaged}
+			<p class="managed">Managed by <code>{configFile}</code> — edit the config file.</p>
+		{:else}
+			<button onclick={saveReversal} disabled={reversalSaved}>
+				{reversalSaved ? 'Saved' : 'Save'}
+			</button>
+		{/if}
 	</section>
 
 	<section>
@@ -111,21 +130,35 @@
 			model <code>llama3.1</code>. The API key is encrypted at rest and never shown again
 			after saving.
 		</p>
+		{#if configError}
+			<p class="error">Config file problem — {configError}</p>
+		{/if}
 		<label class="fld">
-			<span>Base URL</span>
-			<input type="text" bind:value={llmBaseUrl} oninput={() => (llmSaved = false)} placeholder="https://openrouter.ai/api/v1" />
+			<span>Base URL {#if managed('base_url')}<em class="dim">(managed)</em>{/if}</span>
+			<input type="text" bind:value={llmBaseUrl} oninput={() => (llmSaved = false)} disabled={managed('base_url')} placeholder="https://openrouter.ai/api/v1" />
 		</label>
 		<label class="fld">
-			<span>Model</span>
-			<input type="text" bind:value={llmModel} oninput={() => (llmSaved = false)} placeholder="minimax/minimax-m2" />
+			<span>Model {#if managed('model')}<em class="dim">(managed)</em>{/if}</span>
+			<input type="text" bind:value={llmModel} oninput={() => (llmSaved = false)} disabled={managed('model')} placeholder="minimax/minimax-m2" />
 		</label>
 		<label class="fld">
-			<span>API key {#if llmKeySet}<em class="dim">(saved — leave blank to keep)</em>{/if}</span>
-			<input type="password" bind:value={llmApiKey} oninput={() => (llmSaved = false)} placeholder={llmKeySet ? '••••••••' : 'sk-…'} autocomplete="off" />
+			<span>API key
+				{#if managed('api_key')}<em class="dim">(managed)</em>
+				{:else if llmKeySet}<em class="dim">(saved — leave blank to keep)</em>{/if}</span>
+			<input type="password" bind:value={llmApiKey} oninput={() => (llmSaved = false)} disabled={managed('api_key')} placeholder={llmKeySet ? '••••••••' : 'sk-…'} autocomplete="off" />
 		</label>
-		{#if llmFromEnv}<p class="dim">Currently configured from environment variables; saving here overrides them.</p>{/if}
+		{#if llmManaged.length}
+			<p class="managed">
+				{llmManaged.length === 3 ? 'Managed' : 'Partly managed'} by <code>{configFile}</code> —
+				edit the config file rather than this page.
+			</p>
+		{:else if llmFromEnv}
+			<p class="dim">Currently configured from environment variables; saving here overrides them.</p>
+		{/if}
 		{#if llmError}<p class="error">{llmError}</p>{/if}
-		<button onclick={saveLlm} disabled={llmSaved}>{llmSaved ? 'Saved' : 'Save connection'}</button>
+		{#if llmManaged.length < 3}
+			<button onclick={saveLlm} disabled={llmSaved}>{llmSaved ? 'Saved' : 'Save connection'}</button>
+		{/if}
 	</section>
 {/if}
 
@@ -205,9 +238,21 @@
 		color: var(--text-dim);
 	}
 
+	.managed {
+		color: var(--text-dim);
+		border-left: 2px solid var(--line, #3a3a4a);
+		padding-left: 0.6rem;
+		font-size: 0.92em;
+	}
+
 	.fld {
 		display: block;
 		margin-bottom: 0.8rem;
+	}
+
+	.fld input:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	.fld > span {
