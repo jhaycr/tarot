@@ -11,6 +11,7 @@
 		type SavedReading
 	} from '$lib/api';
 	import Card from '$lib/Card.svelte';
+	import { toParagraphs } from '$lib/text';
 	import { readingStore } from '$lib/reading.svelte';
 	import { prefPersona, prefGuidedMode } from '$lib/prefs.svelte';
 
@@ -177,7 +178,10 @@
 						{#if flipped[i]}
 							<h3>{cardName(drawn)}{drawn.reversed ? ' (reversed)' : ''}</h3>
 							{#if focused[i]}
-								<p>{focused[i]}{#if streaming === i}<span class="caret">▋</span>{/if}</p>
+								{@const paras = toParagraphs(focused[i])}
+								{#each paras as para, p (p)}
+									<p>{para}{#if streaming === i && p === paras.length - 1}<span class="caret">▋</span>{/if}</p>
+								{/each}
 							{:else if streaming === i}
 								<p class="dim">consulting the cards…</p>
 							{:else}
@@ -195,8 +199,10 @@
 			<section class="comprehensive">
 				<h2>The whole picture</h2>
 				{#if comprehensive}
-					{#each comprehensive.split('\n\n') as para, i (i)}<p>{para}</p>{/each}
-					{#if streaming === 'comprehensive'}<span class="caret">▋</span>{/if}
+					{@const cparas = toParagraphs(comprehensive)}
+					{#each cparas as para, i (i)}
+						<p>{para}{#if streaming === 'comprehensive' && i === cparas.length - 1}<span class="caret">▋</span>{/if}</p>
+					{/each}
 				{:else if streaming === 'comprehensive'}
 					<p class="dim">drawing the threads together…</p>
 				{:else}

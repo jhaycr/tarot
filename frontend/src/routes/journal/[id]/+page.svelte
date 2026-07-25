@@ -4,6 +4,7 @@
 	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type SavedReading } from '$lib/api';
 	import CardDetail from '$lib/CardDetail.svelte';
 	import VisibilitySelect from '$lib/VisibilitySelect.svelte';
+	import { toParagraphs } from '$lib/text';
 	import { prefJournalLayout } from '$lib/prefs.svelte';
 
 	const id = $derived(Number(page.params.id));
@@ -185,14 +186,14 @@
 					<div class="fr">
 						<h3>{deckCardName(drawn.card.name, viewDeckInfo)}{drawn.reversed ? ' (reversed)' : ''}
 							<span class="dim">· {drawn.position.name}</span></h3>
-						<p>{it.focused[String(i)]}</p>
+						{#each toParagraphs(it.focused[String(i)]) as para, p (p)}<p>{para}</p>{/each}
 					</div>
 				{/if}
 			{/each}
 			{#if it.comprehensive}
 				<div class="fr whole">
 					<h3>The whole picture</h3>
-					{#each it.comprehensive.split('\n\n') as para, i (i)}<p>{para}</p>{/each}
+					{#each toParagraphs(it.comprehensive) as para, i (i)}<p>{para}</p>{/each}
 				</div>
 			{/if}
 		</section>

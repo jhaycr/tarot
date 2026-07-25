@@ -185,8 +185,13 @@ def describe_card(
     lines.append(_card_line(card))
     lines.append(
         "\nGive a focused reading of just this card"
-        + (", developing the reading in light of the cards already revealed."
+        + (", developing it in light of the cards already revealed."
            if prior else " in its position.")
+        + " Keep it short and conversational — aim for about 120 words. Speak "
+        "directly about what this card means here, then close with one or two "
+        "brief questions for reflection. Plain prose only: no headings, no section "
+        "titles, no bold, and no bulleted or numbered lists — write the questions "
+        "as plain sentences."
     )
     return "\n".join(lines)
 
@@ -210,7 +215,10 @@ def describe_comprehensive(
             lines.append(f"    focused reading: {text}")
     lines.append(
         "\nNow give a comprehensive reading that ties the whole spread together, "
-        "building on the focused readings above and how the cards relate."
+        "building on the focused readings above and how the cards relate. Write it "
+        "as flowing paragraphs of plain prose — no headings, section titles, bold, "
+        "or bulleted/numbered lists. It can be a little fuller than the per-card "
+        "readings, but stay focused and readable."
     )
     return "\n".join(lines)
 
