@@ -32,8 +32,11 @@ export interface DeckSummary {
 	missing: number[];
 	has_back: boolean;
 	owner: string | null;
-	shared: boolean;
+	tier: 'builtin' | 'library' | 'staging';
+	published: boolean;
+	published_by: string | null;
 	yours: boolean;
+	can_unpublish: boolean;
 }
 
 export interface SpreadPosition {
@@ -88,6 +91,25 @@ export interface Person {
 	display_name: string;
 }
 
+/** Fields listed in `managed` come from the Ansible-managed config file and
+ *  cannot be written from the UI. */
+export interface ReadingSettings {
+	reversal_chance: number;
+	default: number;
+	managed: string[];
+	config_file: string | null;
+}
+
+export interface LlmSettings {
+	base_url: string;
+	model: string;
+	api_key_set: boolean;
+	from_env: boolean;
+	managed: string[];
+	config_file: string | null;
+	config_error: string | null;
+}
+
 async function get<T>(url: string): Promise<T> {
 	const res = await fetch(url);
 	if (!res.ok) throw new Error(`${url}: ${res.status}`);
@@ -140,20 +162,12 @@ export const api = {
 			error: string | null;
 			total: number;
 		}>(`/api/decks/download/${job}`),
-	getReadingSettings: () =>
-		get<{ reversal_chance: number; default: number }>('/api/settings/reading'),
+	getReadingSettings: () => get<ReadingSettings>('/api/settings/reading'),
 	setReadingSettings: (s: { reversal_chance: number }) =>
-		send<{ reversal_chance: number; default: number }>('PUT', '/api/settings/reading', s),
-	getLlmSettings: () =>
-		get<{ base_url: string; model: string; api_key_set: boolean; from_env: boolean }>(
-			'/api/settings/llm'
-		),
+		send<ReadingSettings>('PUT', '/api/settings/reading', s),
+	getLlmSettings: () => get<LlmSettings>('/api/settings/llm'),
 	setLlmSettings: (s: { base_url?: string; model?: string; api_key?: string }) =>
-		send<{ base_url: string; model: string; api_key_set: boolean; from_env: boolean }>(
-			'PUT',
-			'/api/settings/llm',
-			s
-		),
+		send<LlmSettings>('PUT', '/api/settings/llm', s),
 	interpret: (question: string | null, spread: string, cards: DrawnCard[], persona?: string) =>
 		send<{ interpretation: string }>('POST', '/api/interpret', {
 			question,
@@ -177,8 +191,8 @@ export const api = {
 			include_extras: includeExtras,
 			question: question || null
 		}),
-	shareDeck: (slug: string, shared: boolean) =>
-		send<{ slug: string; shared: boolean }>('POST', `/api/decks/${slug}/share`, { shared }),
+	publishDeck: (slug: string) => send<DeckSummary>('POST', `/api/decks/${slug}/publish`),
+	unpublishDeck: (slug: string) => send<DeckSummary>('POST', `/api/decks/${slug}/unpublish`),
 	readings: () => get<SavedReading[]>('/api/readings'),
 	reading: (id: number) => get<SavedReading>(`/api/readings/${id}`),
 	saveReading: (r: Reading & { notes?: string }) => send<SavedReading>('POST', '/api/readings', r),

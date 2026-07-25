@@ -1,10 +1,14 @@
 """Deck discovery: scan deck directories for manifest.yaml + cards/NN.<ext>.
 
-Deck locations and visibility:
-- builtin decks (shipped in the image)          -> everyone
-- instance decks  ($TAROT_DATA_DIR/decks)       -> everyone
-- user decks      ($TAROT_DATA_DIR/users/<u>/decks)
-    -> their owner always; others only when the manifest has `shared: true`
+Deck tiers and visibility:
+- builtin  decks (shipped in the image)          -> everyone
+- library  decks ($TAROT_DATA_DIR/decks)         -> everyone (the family pool)
+- staging  decks ($TAROT_DATA_DIR/users/<u>/decks) -> their owner ONLY
+
+A deck is either a private draft in someone's staging or published to the
+family library — there is no per-person deck sharing. Publishing MOVES the
+folder into the library and records `published_by` in its manifest; the move is
+a same-filesystem rename, so it is atomic and preserves the dedupe hardlinks.
 """
 
 import os
@@ -16,6 +20,21 @@ import yaml
 from tarot.cards import MAJORS as MAJOR_NAMES
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+BUILTIN, LIBRARY, STAGING = "builtin", "library", "staging"
+
+# Marker left in `published_by` when a deck's publisher deletes their account
+# (Phase 2 / b5): the deck stays in the library but is no longer anyone's to
+# unpublish except an admin.
+FORMER_MEMBER = "former member"
+
+
+class DeckConflict(Exception):
+    """Target slug already occupied (publish/unpublish would clobber)."""
+
+
+class DeckForbidden(Exception):
+    """Caller may not publish/unpublish this deck."""
 
 
 def builtin_decks_dir() -> Path:
@@ -41,8 +60,9 @@ class Deck:
     source: str | None = None
     attribution: str | None = None
     license: str | None = None
-    owner: str | None = None  # None = builtin/instance deck, visible to all
-    shared: bool = False
+    owner: str | None = None  # the staging owner; None for builtin/library
+    tier: str = STAGING  # builtin | library | staging
+    published_by: str | None = None  # who moved it into the library (library only)
     # optional deck-specific suit names, e.g. {"Wands": "Vitality"}
     suit_names: dict[str, str] = field(default_factory=dict)
     # optional deck-specific major arcana names, e.g. {"The Fool": "Spore"}
@@ -70,7 +90,7 @@ class Deck:
         return None
 
 
-def _load_deck(deck_path: Path, owner: str | None = None) -> Deck | None:
+def _load_deck(deck_path: Path, owner: str | None = None, tier: str = STAGING) -> Deck | None:
     manifest_path = deck_path / "manifest.yaml"
     if not manifest_path.is_file():
         return None
@@ -83,7 +103,8 @@ def _load_deck(deck_path: Path, owner: str | None = None) -> Deck | None:
         attribution=manifest.get("attribution"),
         license=manifest.get("license"),
         owner=owner,
-        shared=bool(manifest.get("shared")),
+        tier=tier,
+        published_by=manifest.get("published_by") if tier == LIBRARY else None,
         suit_names={
             k: str(v)
             for k, v in (manifest.get("suits") or {}).items()
@@ -126,13 +147,13 @@ def _load_deck(deck_path: Path, owner: str | None = None) -> Deck | None:
     return deck
 
 
-def _scan(root: Path, owner: str | None = None) -> list[Deck]:
+def _scan(root: Path, owner: str | None = None, tier: str = STAGING) -> list[Deck]:
     if not root.is_dir():
         return []
     decks = []
     for deck_path in sorted(root.iterdir()):
         if deck_path.is_dir():
-            deck = _load_deck(deck_path, owner=owner)
+            deck = _load_deck(deck_path, owner=owner, tier=tier)
             if deck and deck.cards:
                 decks.append(deck)
     return decks
@@ -148,25 +169,117 @@ def all_users() -> list[str]:
 def discover_decks(user: str | None = None) -> dict[str, Deck]:
     """Decks visible to `user` (or only the public pool when user is None).
 
-    Later sources win on slug collision; a user's own deck always wins last.
+    builtin + library are visible to everyone; a user additionally sees their
+    own private staging. Later sources win on slug collision, so a staging draft
+    shadows a library deck of the same slug for its owner.
     """
     decks: dict[str, Deck] = {}
-    for deck in _scan(builtin_decks_dir()) + _scan(user_decks_dir(None)):
+    for deck in _scan(builtin_decks_dir(), tier=BUILTIN):
+        decks[deck.slug] = deck
+    for deck in _scan(user_decks_dir(None), tier=LIBRARY):
         decks[deck.slug] = deck
     if user is not None:
-        for other in all_users():
-            if other == user:
-                continue
-            for deck in _scan(user_decks_dir(other), owner=other):
-                if deck.shared:
-                    decks[deck.slug] = deck
-        for deck in _scan(user_decks_dir(user), owner=user):
+        for deck in _scan(user_decks_dir(user), owner=user, tier=STAGING):
             decks[deck.slug] = deck
     return decks
 
 
-def set_deck_shared(deck: Deck, shared: bool) -> None:
-    manifest_path = deck.path / "manifest.yaml"
+def update_manifest(deck_path: Path, **changes) -> None:
+    """Merge `changes` into a deck's manifest.yaml; a value of None drops its key."""
+    manifest_path = deck_path / "manifest.yaml"
     manifest = yaml.safe_load(manifest_path.read_text()) or {}
-    manifest["shared"] = shared
+    for key, value in changes.items():
+        if value is None:
+            manifest.pop(key, None)
+        else:
+            manifest[key] = value
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True))
+
+
+def publish_deck(user: str, slug: str, now: int) -> Deck | None:
+    """Move `user`'s staging deck into the family library.
+
+    Returns None if `user` has no such staging deck (caller -> 404); raises
+    DeckConflict if the library slug is taken.
+    """
+    src = user_decks_dir(user) / slug
+    if not (src / "manifest.yaml").is_file():
+        return None
+    dest = user_decks_dir(None) / slug
+    if dest.exists():
+        raise DeckConflict(slug)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dest)  # same filesystem: atomic, keeps dedupe hardlinks
+    update_manifest(dest, published_by=user, published_at=now, shared=None)
+    return _load_deck(dest, tier=LIBRARY)
+
+
+def unpublish_deck(user: str, slug: str, is_admin: bool, now: int) -> Deck | None:
+    """Move a library deck back into its publisher's staging.
+
+    Returns None if there is no such library deck (caller -> 404); raises
+    DeckForbidden if `user` is neither the publisher nor an admin, and
+    DeckConflict if the publisher already has a staging deck of that slug.
+    """
+    src = user_decks_dir(None) / slug
+    manifest_path = src / "manifest.yaml"
+    if not manifest_path.is_file():
+        return None
+    manifest = yaml.safe_load(manifest_path.read_text()) or {}
+    publisher = manifest.get("published_by")
+    if not is_admin and publisher != user:
+        raise DeckForbidden(slug)
+    # A tombstoned/unknown publisher can't receive it back; the acting admin does.
+    target = publisher if publisher and publisher != FORMER_MEMBER else user
+    dest = user_decks_dir(target) / slug
+    if dest.exists():
+        raise DeckConflict(slug)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dest)
+    update_manifest(dest, published_by=None, published_at=None)
+    return _load_deck(dest, owner=target, tier=STAGING)
+
+
+def migrate_publish_decks(now: int) -> tuple[list[str], list[str]]:
+    """One-time migration: move every deck that was shared under the old flag —
+    plus everything the system user (`local`) staged — into the family library.
+
+    `local` is a shared LAN pseudo-user with no privacy expectation, so all of
+    its decks are published; other users only have their explicitly `shared`
+    decks moved. Idempotent and defensive: a deck whose library slug is already
+    taken, or that fails to move, is skipped rather than aborting the batch.
+
+    Returns (published, skipped) as human-readable "<owner>/<slug>" lists.
+    """
+    from tarot.auth import FALLBACK_USER
+
+    library = user_decks_dir(None)
+    published: list[str] = []
+    skipped: list[str] = []
+    for owner in all_users():
+        staging = user_decks_dir(owner)
+        if not staging.is_dir():
+            continue
+        for deck_path in sorted(p for p in staging.iterdir() if p.is_dir()):
+            manifest_path = deck_path / "manifest.yaml"
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = yaml.safe_load(manifest_path.read_text()) or {}
+            except yaml.YAMLError:
+                skipped.append(f"{owner}/{deck_path.name} (unreadable manifest)")
+                continue
+            if owner != FALLBACK_USER and not manifest.get("shared"):
+                continue  # another user's private draft stays put
+            dest = library / deck_path.name
+            if dest.exists():
+                skipped.append(f"{owner}/{deck_path.name} (library slug taken)")
+                continue
+            try:
+                library.mkdir(parents=True, exist_ok=True)
+                deck_path.rename(dest)
+                update_manifest(dest, published_by=owner, published_at=now, shared=None)
+                published.append(f"{owner}/{deck_path.name}")
+            except OSError as exc:
+                skipped.append(f"{owner}/{deck_path.name} ({exc})")
+    return published, skipped

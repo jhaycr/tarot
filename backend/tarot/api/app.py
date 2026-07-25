@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import threading
+import time
 import zipfile
 
 import httpx
@@ -27,7 +28,14 @@ from tarot.auth import (
     is_authenticated,
 )
 from tarot.cards import CARDS
-from tarot.decks import IMAGE_EXTS, discover_decks, set_deck_shared, user_decks_dir
+from tarot import decks as decks_mod
+from tarot.decks import (
+    DeckConflict,
+    DeckForbidden,
+    IMAGE_EXTS,
+    discover_decks,
+    user_decks_dir,
+)
 from tarot.spreads import SPREADS, SPREADS_BY_SLUG
 
 app = FastAPI(title="Tarotarium", docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -137,8 +145,12 @@ def list_decks(user: User):
             "missing": [] if d.complete else sorted(set(range(78)) - set(d.cards)),
             "has_back": d.back is not None,
             "owner": d.owner,
-            "shared": d.shared,
-            "yours": d.owner == user,
+            "tier": d.tier,
+            "published": d.tier == decks_mod.LIBRARY,
+            "published_by": d.published_by,
+            "yours": d.tier == decks_mod.STAGING and d.owner == user,
+            "can_unpublish": d.tier == decks_mod.LIBRARY
+            and (d.published_by == user or is_admin(user)),
         }
         for d in discover_decks(user).values()
     ]
@@ -161,10 +173,6 @@ def back_image(slug: str, user: User):
     return FileResponse(deck.back, headers=IMAGE_CACHE)
 
 
-class ShareRequest(BaseModel):
-    shared: bool
-
-
 @app.get("/api/decks/{slug}/export")
 def export_deck(slug: str, user: User):
     """Zip a deck back up (numbered card files + back + manifest) for download."""
@@ -185,13 +193,43 @@ def export_deck(slug: str, user: User):
     )
 
 
-@app.post("/api/decks/{slug}/share")
-def share_deck(slug: str, req: ShareRequest, user: User):
-    deck = get_deck_or_404(slug, user)
-    if deck.owner != user:
-        raise HTTPException(403, "only the deck's owner can change sharing")
-    set_deck_shared(deck, req.shared)
-    return {"slug": slug, "shared": req.shared}
+def _deck_view(d, user: str) -> dict:
+    return {
+        "slug": d.slug,
+        "name": d.name,
+        "tier": d.tier,
+        "published": d.tier == decks_mod.LIBRARY,
+        "published_by": d.published_by,
+        "yours": d.tier == decks_mod.STAGING and d.owner == user,
+        "can_unpublish": d.tier == decks_mod.LIBRARY
+        and (d.published_by == user or is_admin(user)),
+    }
+
+
+@app.post("/api/decks/{slug}/publish")
+def publish_deck(slug: str, user: User):
+    """Move one of your private drafts into the shared family library."""
+    try:
+        deck = decks_mod.publish_deck(user, slug, int(time.time()))
+    except DeckConflict:
+        raise HTTPException(409, f"the library already has a deck '{slug}' — rename yours first")
+    if deck is None:
+        raise HTTPException(404, f"you have no draft deck '{slug}' to publish")
+    return _deck_view(deck, user)
+
+
+@app.post("/api/decks/{slug}/unpublish")
+def unpublish_deck(slug: str, user: User):
+    """Move a library deck back to its publisher's drafts."""
+    try:
+        deck = decks_mod.unpublish_deck(user, slug, is_admin(user), int(time.time()))
+    except DeckForbidden:
+        raise HTTPException(403, "only the publisher or an admin can unpublish this deck")
+    except DeckConflict:
+        raise HTTPException(409, f"a draft deck '{slug}' already exists in the destination")
+    if deck is None:
+        raise HTTPException(404, f"no library deck '{slug}'")
+    return _deck_view(deck, user)
 
 
 DOWNLOAD_JOBS: dict[str, dict] = {}

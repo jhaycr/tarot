@@ -116,9 +116,23 @@ def _m2_reading_visibility(con: sqlite3.Connection) -> None:
     )
 
 
+def _m3_publish_decks(con: sqlite3.Connection) -> None:
+    """Publish legacy shared decks (and all of `local`'s decks) into the family
+    library. Filesystem-only — no schema change; gated by schema_version so it
+    runs exactly once. See decks.migrate_publish_decks for the policy.
+    """
+    from tarot import decks
+
+    published, skipped = decks.migrate_publish_decks(int(time.time()))
+    print(f"[migration 3] published {len(published)} deck(s) to the library: {published}")
+    if skipped:
+        print(f"[migration 3] skipped {len(skipped)}: {skipped}")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m1_user_registry),
     (2, _m2_reading_visibility),
+    (3, _m3_publish_decks),
 ]
 
 

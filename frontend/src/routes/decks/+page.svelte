@@ -17,12 +17,39 @@
 		loaded = true;
 	}
 
-	async function toggleShare(deck: DeckSummary, e: Event) {
+	let deckError = $state('');
+
+	async function publish(deck: DeckSummary, e: Event) {
 		e.preventDefault();
 		e.stopPropagation();
-		await api.shareDeck(deck.slug, !deck.shared);
+		deckError = '';
+		try {
+			await api.publishDeck(deck.slug);
+		} catch (err) {
+			// 409 = a library deck already owns this slug; the fix is a rename,
+			// which lives on the deck detail page, so point there.
+			deckError =
+				err instanceof Error && err.message.includes('409')
+					? `A deck named “${deck.slug}” is already in the family library. Rename yours before publishing.`
+					: 'Could not publish the deck.';
+		}
 		await refresh();
 	}
+
+	async function unpublish(deck: DeckSummary, e: Event) {
+		e.preventDefault();
+		e.stopPropagation();
+		deckError = '';
+		try {
+			await api.unpublishDeck(deck.slug);
+		} catch {
+			deckError = 'Could not unpublish the deck.';
+		}
+		await refresh();
+	}
+
+	let myDrafts = $derived(decks.filter((d) => d.tier === 'staging'));
+	let library = $derived(decks.filter((d) => d.tier !== 'staging'));
 
 	let dlSource = $state('');
 	let dlName = $state('');
@@ -134,7 +161,8 @@
 		Zip of card images: 78 for a full deck, 22 for majors-only — or number the
 		files <code>00</code>–<code>77</code> to map them explicitly (majors 0–21, then
 		wands, cups, swords, pentacles: ace, 2–10, page, knight, queen, king). Include
-		<code>back.jpg</code> for a card back. Goes into your personal collection.
+		<code>back.jpg</code> for a card back. Starts as a private draft — publish it
+		to share with the family.
 	</p>
 	<div class="row">
 		<input type="text" placeholder="Deck name" bind:value={uploadName} />
@@ -150,22 +178,34 @@
 	{#if uploadError}<p class="error">{uploadError}</p>{/if}
 </section>
 
+{#if deckError}<p class="error">{deckError}</p>{/if}
+
+{#snippet deckCard(deck: DeckSummary)}
+	<a class="deck" href="/decks/{deck.slug}">
+		<img src={api.cardImage(deck.slug, 0)} alt="{deck.name} — The Fool" loading="lazy" />
+		<strong>{deck.name}</strong>
+		<small>
+			{deckLabel(deck)}
+			{#if deck.published && deck.published_by}· <span class="badge">by {deck.published_by}</span>{/if}
+		</small>
+		{#if deck.yours}
+			<button class="share" onclick={(e) => publish(deck, e)}>Publish to family</button>
+		{:else if deck.can_unpublish}
+			<button class="share" onclick={(e) => unpublish(deck, e)}>Unpublish</button>
+		{/if}
+	</a>
+{/snippet}
+
+{#if myDrafts.length}
+	<h2 class="section">Your drafts <span class="dim">· private until you publish</span></h2>
+	<div class="grid">
+		{#each myDrafts as deck (deck.slug)}{@render deckCard(deck)}{/each}
+	</div>
+{/if}
+
+<h2 class="section">Family library</h2>
 <div class="grid">
-	{#each decks as deck (deck.slug)}
-		<a class="deck" href="/decks/{deck.slug}">
-			<img src={api.cardImage(deck.slug, 0)} alt="{deck.name} — The Fool" loading="lazy" />
-			<strong>{deck.name}</strong>
-			<small>
-				{deckLabel(deck)}
-				{#if deck.owner && !deck.yours}· <span class="badge">{deck.owner}</span>{/if}
-			</small>
-			{#if deck.yours}
-				<button class="share" onclick={(e) => toggleShare(deck, e)}>
-					{deck.shared ? 'Shared ✓ (click to unshare)' : 'Share with instance'}
-				</button>
-			{/if}
-		</a>
-	{/each}
+	{#each library as deck (deck.slug)}{@render deckCard(deck)}{/each}
 </div>
 
 <style>
@@ -201,6 +241,16 @@
 
 	.badge {
 		color: var(--accent);
+	}
+
+	.section {
+		font-size: 1.05rem;
+		margin: 1.6rem 0 0.8rem;
+	}
+
+	.section .dim {
+		font-weight: normal;
+		font-size: 0.85rem;
 	}
 
 	.share {
