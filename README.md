@@ -8,6 +8,11 @@ LLM interpretation with selectable reader personas, and a deck downloader
 (`tarot-dl`). Ships as a single container: FastAPI backend + SvelteKit PWA
 frontend (installable on phones, offline-capable).
 
+> **Personal project, no support.** Built largely with AI code-generation tools
+> to scratch my own itch. Shared in case it's useful to you too. Issues and
+> feature requests are welcome and I read them all, but responses and fixes
+> happen on hobby-project time. Review and test before relying on it.
+
 ## 🤖 An AI-native project
 
 This project was designed and built **AI-natively**: the architecture, code,
