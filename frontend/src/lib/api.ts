@@ -91,6 +91,37 @@ export interface Person {
 	display_name: string;
 }
 
+export interface GrantedShare {
+	id: number;
+	question: string | null;
+	deck: string;
+	spread: string;
+	created_at: number;
+	visibility: Visibility;
+	shared_with: string[];
+}
+
+export interface ReceivedShare {
+	id: number;
+	owner: string;
+	question: string | null;
+	deck: string;
+	spread: string;
+	created_at: number;
+	granted_at: number;
+}
+
+export interface Account {
+	user: string;
+	display_name: string;
+	authenticated: boolean;
+	is_admin: boolean;
+	reading_count: number;
+	shares_granted: GrantedShare[];
+	shares_received: ReceivedShare[];
+	published_decks: { slug: string; name: string }[];
+}
+
 /** Fields listed in `managed` come from the Ansible-managed config file and
  *  cannot be written from the UI. */
 export interface ReadingSettings {
@@ -199,6 +230,7 @@ export const api = {
 	updateReading: (id: number, patch: { notes?: string }) =>
 		send<SavedReading>('PATCH', `/api/readings/${id}`, patch),
 	users: () => get<Person[]>('/api/users'),
+	account: () => get<Account>('/api/account'),
 	setSharing: (id: number, visibility: Visibility, grantees: string[] = []) =>
 		send<SavedReading>('PUT', `/api/readings/${id}/sharing`, { visibility, grantees }),
 	deleteReading: (id: number) => send<{ deleted: number }>('DELETE', `/api/readings/${id}`),

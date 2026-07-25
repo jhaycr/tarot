@@ -323,15 +323,38 @@ def set_sharing(reading_id: int, owner: str, visibility: str, grantees: list[str
 
 
 def shares_granted(owner: str) -> list[dict]:
-    """Every share this user has made — the account page's revoke list."""
+    """Readings this user has shared, each with its grantee list — the account
+    page's revoke list. `everyone`-visible readings are included too, with an
+    empty grantee list, so they can be seen and made private again.
+    """
     with connect() as con:
-        rows = con.execute(
-            "SELECT r.id, r.question, r.deck, r.spread, r.created_at, s.grantee, s.granted_at"
-            " FROM reading_shares s JOIN readings r ON r.id = s.reading_id"
-            " WHERE r.owner = ? ORDER BY r.created_at DESC, s.grantee",
+        readings = con.execute(
+            "SELECT id, question, deck, spread, created_at, visibility FROM readings"
+            " WHERE owner = ? AND visibility != 'private' ORDER BY created_at DESC",
             (owner,),
         ).fetchall()
+        rows = [dict(r) for r in readings]
+        _attach_shares(con, rows)  # fills shared_with per row
+        return rows
+
+
+def shares_received(user: str) -> list[dict]:
+    """Readings other people have shared specifically with this user."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT r.id, r.owner, r.question, r.deck, r.spread, r.created_at, s.granted_at"
+            " FROM reading_shares s JOIN readings r ON r.id = s.reading_id"
+            " WHERE s.grantee = ? ORDER BY s.granted_at DESC",
+            (user,),
+        ).fetchall()
         return [dict(r) for r in rows]
+
+
+def owned_reading_count(owner: str) -> int:
+    with connect() as con:
+        return con.execute(
+            "SELECT count(*) FROM readings WHERE owner = ?", (owner,)
+        ).fetchone()[0]
 
 
 def get_user_prompt(owner: str) -> str:

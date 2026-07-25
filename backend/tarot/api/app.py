@@ -507,6 +507,26 @@ def admin_user_update(username: str, req: UpdateUserRequest, user: User):
     return updated
 
 
+@app.get("/api/account")
+def account(request: Request, user: User):
+    """Everything the current user owns and has shared, for the account page."""
+    published = [
+        {"slug": d.slug, "name": d.name}
+        for d in discover_decks(user).values()
+        if d.tier == decks_mod.LIBRARY and d.published_by == user
+    ]
+    return {
+        "user": user,
+        "display_name": display_name(request),
+        "authenticated": is_authenticated(request),
+        "is_admin": is_admin(user),
+        "reading_count": db.owned_reading_count(user),
+        "shares_granted": db.shares_granted(user),
+        "shares_received": db.shares_received(user),
+        "published_decks": published,
+    }
+
+
 @app.get("/api/settings/llm")
 def get_llm_settings(user: User):
     require_admin(user)

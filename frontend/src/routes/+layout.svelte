@@ -49,7 +49,9 @@
 		</nav>
 		{#if user}
 			<span class="account">
-				<span class="user" title="Readings and decks are saved under this name">☾ {user}</span>
+				<a class="user" href="/account" title="Your account — identity, shares, published decks"
+					>☾ {user}</a
+				>
 				{#if logoutUrl}
 					<a class="logout" href={logoutUrl} data-sveltekit-reload title="Sign out">Log out</a>
 				{/if}
@@ -121,6 +123,12 @@
 	.user {
 		color: var(--text-dim);
 		font-size: 0.85rem;
+		border-bottom: 1px solid transparent;
+	}
+
+	.user:hover {
+		color: var(--gold);
+		border-bottom-color: var(--gold);
 	}
 
 	.logout {
