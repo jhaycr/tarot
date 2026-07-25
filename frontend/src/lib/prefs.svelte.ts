@@ -17,6 +17,7 @@ export const prefDeck = persisted('tarot.deck', '');
 export const prefSpread = persisted('tarot.spread', 'three-card');
 export const prefReversals = persisted('tarot.reversals', 'true');
 export const prefPersona = persisted('tarot.persona', 'alice');
+export const prefGuidedMode = persisted('tarot.guidedMode', 'isolated'); // isolated | cumulative
 export const prefJournalLayout = persisted('tarot.journalLayout', 'grid');
 
 function persistedList(key: string): { value: string[] } {

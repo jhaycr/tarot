@@ -14,12 +14,13 @@ from typing import Annotated
 
 import yaml
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import config as cfgfile, crypto, db, dedupe, importer, interpret as interp, users
+from tarot import config as cfgfile, crypto, db, dedupe, importer, interpret as interp, sse, users
 from tarot.auth import (
     LOGOUT_URL,
     current_user,
@@ -705,6 +706,117 @@ def readings_delete(reading_id: int, user: User):
     if not db.delete_reading(reading_id, user):
         raise HTTPException(404, "reading not found or not yours")
     return {"deleted": reading_id}
+
+
+# --- Guided reading (card-by-card streamed interpretation) ---------------------
+
+GUIDED_MODES = ("isolated", "cumulative")
+
+
+class GuidedReadingRequest(BaseModel):
+    deck: str
+    spread: str
+    question: str | None = None
+    cards: list[dict]
+    mode: str = "isolated"
+    notes: str = ""
+
+
+class StreamInterpretRequest(BaseModel):
+    persona: str | None = None  # fixed for the reading; sent on each streamed call
+
+
+@app.post("/api/readings/guided")
+def create_guided(req: GuidedReadingRequest, user: User):
+    """Create the in-progress guided reading up front (resumable)."""
+    if req.mode not in GUIDED_MODES:
+        raise HTTPException(400, f"mode must be one of {', '.join(GUIDED_MODES)}")
+    r = db.create_guided_reading(
+        user, req.question, req.deck, req.spread, req.cards, req.mode, notes=req.notes
+    )
+    return _reading_view(r, user)
+
+
+def _resolve_persona_or_400(persona: str | None, user: str) -> str:
+    if interp.config() is None:
+        raise HTTPException(404, "LLM interpretation is not configured")
+    try:
+        return interp.resolve_prompt(persona, db.get_user_prompt(user))
+    except KeyError:
+        raise HTTPException(404, f"unknown persona '{persona}'")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+def _stream_and_persist(request: Request, user: str, persona: str | None,
+                        system_prompt: str, user_content: str, persist):
+    """Shared SSE generator: stream deltas, then persist the full text at natural
+    completion only (skipped on disconnect / mid-stream error), then `done`."""
+    async def gen():
+        parts: list[str] = []
+        try:
+            async for delta in interp.interpret_stream(system_prompt, user_content):
+                if await request.is_disconnected():
+                    return  # client left — stop consuming the LLM, persist nothing
+                parts.append(delta)
+                yield sse.sse("token", {"text": delta})
+        except httpx.HTTPError as e:
+            yield sse.sse("error", {"message": f"LLM endpoint error: {e}"})
+            return
+        except Exception:
+            yield sse.sse("error", {"message": "interpretation failed"})
+            return
+        full = "".join(parts).strip()
+        if full:
+            await run_in_threadpool(persist, full)
+        yield sse.sse("done", {"persona": persona or interp.default_persona()})
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=sse.SSE_HEADERS)
+
+
+@app.post("/api/readings/{reading_id}/interpret/focused/{position}")
+def interpret_focused(reading_id: int, position: int, req: StreamInterpretRequest,
+                      request: Request, user: User):
+    reading = db.get_reading(reading_id, user)
+    if not reading or reading["owner"] != user:
+        raise HTTPException(404, "reading not found or not yours")
+    cards = reading["cards"]
+    if position < 0 or position >= len(cards):
+        raise HTTPException(404, f"no card at position {position}")
+    prompt = _resolve_persona_or_400(req.persona, user)
+
+    spread = SPREADS_BY_SLUG.get(reading["spread"])
+    spread_name = spread["name"] if spread else reading["spread"]
+    if reading["interpretation"]["mode"] == "cumulative":
+        focused = db.get_focused_interpretations(reading_id, user)
+        prior = [(cards[i], focused.get(i)) for i in range(position) if i < len(cards)]
+        content = interp.describe_card(reading["question"], spread_name, cards[position], prior=prior)
+    else:
+        content = interp.describe_card(reading["question"], spread_name, cards[position])
+
+    def persist(text: str):
+        db.set_focused_interpretation(reading_id, user, position, text, persona=req.persona)
+
+    return _stream_and_persist(request, user, req.persona, prompt, content, persist)
+
+
+@app.post("/api/readings/{reading_id}/interpret/comprehensive")
+def interpret_comprehensive(reading_id: int, req: StreamInterpretRequest,
+                            request: Request, user: User):
+    reading = db.get_reading(reading_id, user)
+    if not reading or reading["owner"] != user:
+        raise HTTPException(404, "reading not found or not yours")
+    prompt = _resolve_persona_or_400(req.persona, user)
+
+    spread = SPREADS_BY_SLUG.get(reading["spread"])
+    spread_name = spread["name"] if spread else reading["spread"]
+    focused = db.get_focused_interpretations(reading_id, user)
+    content = interp.describe_comprehensive(reading["question"], spread_name, reading["cards"], focused)
+
+    def persist(text: str):
+        db.set_comprehensive_interpretation(reading_id, user, text, persona=req.persona)
+
+    return _stream_and_persist(request, user, req.persona, prompt, content, persist)
 
 
 class SpaStaticFiles(StaticFiles):

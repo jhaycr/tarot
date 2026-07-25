@@ -75,6 +75,20 @@ export interface Persona {
 
 export type Visibility = 'private' | 'specific' | 'everyone';
 
+export type InterpretationMode = 'isolated' | 'cumulative' | 'single';
+export type InterpretationStatus = 'none' | 'in_progress' | 'complete';
+
+export interface ReadingInterpretation {
+	mode: InterpretationMode | null;
+	status: InterpretationStatus;
+	/** Detail view only. Position ordinal (as string) -> focused reading text. */
+	focused?: Record<string, string>;
+	/** Detail view only. Whole-spread text, null until the final step completes. */
+	comprehensive?: string | null;
+	/** Detail view only. Card ordinals whose focused reading is done. */
+	done_positions?: number[];
+}
+
 export interface SavedReading extends Reading {
 	id: number;
 	owner: string;
@@ -84,6 +98,7 @@ export interface SavedReading extends Reading {
 	/** Who it's shared with. Only ever populated for readings you own. */
 	shared_with: string[];
 	yours: boolean;
+	interpretation: ReadingInterpretation;
 }
 
 export interface Person {
@@ -157,6 +172,47 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
 	return res.json();
 }
 
+export type StreamEvent =
+	| { type: 'token'; data: { text: string } }
+	| { type: 'done'; data: { persona: string } }
+	| { type: 'error'; data: { message: string } };
+
+/** POST an SSE stream and yield its parsed events. Used for guided readings —
+ * fetch()+ReadableStream rather than EventSource because we must POST a body.
+ * abort the signal to stop the server-side LLM call. */
+export async function* streamSSE(
+	url: string,
+	body: unknown,
+	signal: AbortSignal
+): AsyncGenerator<StreamEvent> {
+	const res = await fetch(url, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(body),
+		signal
+	});
+	if (!res.ok || !res.body) throw new Error(`${url}: ${res.status}`);
+	const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+	let buf = '';
+	for (;;) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		buf += value;
+		let i: number;
+		while ((i = buf.indexOf('\n\n')) !== -1) {
+			const frame = buf.slice(0, i);
+			buf = buf.slice(i + 2);
+			let ev = 'message';
+			let data = '';
+			for (const line of frame.split('\n')) {
+				if (line.startsWith('event:')) ev = line.slice(6).trim();
+				else if (line.startsWith('data:')) data += line.slice(5).trim();
+			}
+			if (data) yield { type: ev, data: JSON.parse(data) } as StreamEvent;
+		}
+	}
+}
+
 export const api = {
 	me: () =>
 		get<{
@@ -226,6 +282,12 @@ export const api = {
 	unpublishDeck: (slug: string) => send<DeckSummary>('POST', `/api/decks/${slug}/unpublish`),
 	readings: () => get<SavedReading[]>('/api/readings'),
 	reading: (id: number) => get<SavedReading>(`/api/readings/${id}`),
+	createGuidedReading: (r: Reading & { mode: InterpretationMode; notes?: string }) =>
+		send<SavedReading>('POST', '/api/readings/guided', r),
+	streamFocused: (id: number, position: number, persona: string | null, signal: AbortSignal) =>
+		streamSSE(`/api/readings/${id}/interpret/focused/${position}`, { persona }, signal),
+	streamComprehensive: (id: number, persona: string | null, signal: AbortSignal) =>
+		streamSSE(`/api/readings/${id}/interpret/comprehensive`, { persona }, signal),
 	saveReading: (r: Reading & { notes?: string }) => send<SavedReading>('POST', '/api/readings', r),
 	updateReading: (id: number, patch: { notes?: string }) =>
 		send<SavedReading>('PATCH', `/api/readings/${id}`, patch),

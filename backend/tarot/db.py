@@ -129,10 +129,50 @@ def _m3_publish_decks(con: sqlite3.Connection) -> None:
         print(f"[migration 3] skipped {len(skipped)}: {skipped}")
 
 
+def _m4_guided_interpretations(con: sqlite3.Connection) -> None:
+    """Persist guided-reading interpretation text.
+
+    Reading-level singletons (which context mode, overall status) live as columns
+    on `readings` so the journal list can badge a reading without a join. The
+    per-card and whole-spread text lives in a child table, CASCADE-deleted with
+    the parent, matching the reading_shares precedent. A focused row exists iff
+    that card position has been interpreted, so completion state is intrinsic and
+    the flow is resumable.
+    """
+    con.execute(
+        "ALTER TABLE readings ADD COLUMN interpretation_mode TEXT "
+        "CHECK (interpretation_mode IS NULL OR "
+        "interpretation_mode IN ('isolated','cumulative','single'))"
+    )
+    con.execute(
+        "ALTER TABLE readings ADD COLUMN interpretation_status TEXT "
+        "CHECK (interpretation_status IS NULL OR "
+        "interpretation_status IN ('in_progress','complete'))"
+    )
+    con.execute(
+        """
+        CREATE TABLE reading_interpretations (
+            reading_id INTEGER NOT NULL REFERENCES readings(id) ON DELETE CASCADE,
+            position   INTEGER NOT NULL,   -- 0-based ordinal into readings.cards;
+                                           -- -1 = whole-spread (comprehensive/single)
+            kind       TEXT    NOT NULL CHECK (kind IN ('focused','comprehensive')),
+            text       TEXT    NOT NULL,
+            persona    TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (reading_id, position),
+            CHECK ((kind = 'focused'       AND position >= 0) OR
+                   (kind = 'comprehensive' AND position = -1))
+        )
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m1_user_registry),
     (2, _m2_reading_visibility),
     (3, _m3_publish_decks),
+    (4, _m4_guided_interpretations),
 ]
 
 
@@ -249,6 +289,53 @@ def _attach_shares(con: sqlite3.Connection, rows: list[dict]) -> list[dict]:
     return rows
 
 
+# Guided-reading interpretation. The whole-spread (comprehensive/single) row uses
+# this sentinel position so a plain composite PK enforces one-per-card and exactly
+# one whole-spread row (SQLite lets NULL duplicate in a PK, hence -1 not NULL).
+POSITION_WHOLE = -1
+
+
+def _attach_interpretations(con: sqlite3.Connection, rows: list[dict], full: bool = False) -> list[dict]:
+    """Fold the reading-level interpretation columns into a nested object, and —
+    when full — the per-card/whole-spread text rows. Keeps the raw columns from
+    leaking as top-level keys."""
+    for r in rows:
+        r["interpretation"] = {
+            "mode": r.pop("interpretation_mode", None),
+            "status": r.pop("interpretation_status", None) or "none",
+        }
+    if not full:
+        return rows
+    ids = [r["id"] for r in rows]
+    if ids:
+        marks = ",".join("?" * len(ids))
+        by_reading: dict[int, list] = {}
+        for ir in con.execute(
+            f"SELECT reading_id, position, kind, text FROM reading_interpretations"
+            f" WHERE reading_id IN ({marks}) ORDER BY position",
+            ids,
+        ):
+            by_reading.setdefault(ir["reading_id"], []).append(ir)
+        for r in rows:
+            focused, comprehensive, done = {}, None, []
+            for ir in by_reading.get(r["id"], []):
+                if ir["kind"] == "comprehensive":
+                    comprehensive = ir["text"]
+                else:
+                    focused[str(ir["position"])] = ir["text"]
+                    done.append(ir["position"])
+            r["interpretation"].update(
+                focused=focused, comprehensive=comprehensive, done_positions=done
+            )
+    return rows
+
+
+def _reading_dict(con: sqlite3.Connection, row, full: bool) -> dict:
+    """Standard single-reading dict: cards parsed, shares + interpretation attached."""
+    d = _attach_shares(con, [_row_to_dict(row)])[0]
+    return _attach_interpretations(con, [d], full=full)[0]
+
+
 def save_reading(owner: str, question: str | None, deck: str, spread: str, cards: list, notes: str = "") -> dict:
     with connect() as con:
         cur = con.execute(
@@ -256,7 +343,7 @@ def save_reading(owner: str, question: str | None, deck: str, spread: str, cards
             (owner, int(time.time()), question, deck, spread, json.dumps(cards), notes),
         )
         row = con.execute("SELECT * FROM readings WHERE id = ?", (cur.lastrowid,)).fetchone()
-        return _attach_shares(con, [_row_to_dict(row)])[0]
+        return _reading_dict(con, row, full=True)
 
 
 def list_readings(owner: str, include_shared: bool = True) -> list[dict]:
@@ -270,7 +357,8 @@ def list_readings(owner: str, include_shared: bool = True) -> list[dict]:
             rows = con.execute(
                 "SELECT * FROM readings WHERE owner = ? ORDER BY created_at DESC", (owner,)
             ).fetchall()
-        return _attach_shares(con, [_row_to_dict(r) for r in rows])
+        dicts = _attach_shares(con, [_row_to_dict(r) for r in rows])
+        return _attach_interpretations(con, dicts, full=False)
 
 
 def get_reading(reading_id: int, owner: str) -> dict | None:
@@ -279,7 +367,7 @@ def get_reading(reading_id: int, owner: str) -> dict | None:
             f"SELECT * FROM readings WHERE id = :id AND {_VISIBLE}",
             {"id": reading_id, "me": owner},
         ).fetchone()
-        return _attach_shares(con, [_row_to_dict(row)])[0] if row else None
+        return _reading_dict(con, row, full=True) if row else None
 
 
 def update_reading(reading_id: int, owner: str, notes: str | None = None) -> dict | None:
@@ -292,7 +380,87 @@ def update_reading(reading_id: int, owner: str, notes: str | None = None) -> dic
         row = con.execute(
             "SELECT * FROM readings WHERE id = ? AND owner = ?", (reading_id, owner)
         ).fetchone()
-        return _attach_shares(con, [_row_to_dict(row)])[0] if row else None
+        return _reading_dict(con, row, full=True) if row else None
+
+
+def create_guided_reading(
+    owner: str, question: str | None, deck: str, spread: str,
+    cards: list, mode: str, notes: str = "",
+) -> dict:
+    """Create the in-progress reading up front (cards known, no text yet)."""
+    with connect() as con:
+        cur = con.execute(
+            "INSERT INTO readings (owner, created_at, question, deck, spread, cards,"
+            " notes, interpretation_mode, interpretation_status)"
+            " VALUES (?,?,?,?,?,?,?,?, 'in_progress')",
+            (owner, int(time.time()), question, deck, spread, json.dumps(cards), notes, mode),
+        )
+        row = con.execute("SELECT * FROM readings WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return _reading_dict(con, row, full=True)
+
+
+def _owns(con: sqlite3.Connection, reading_id: int, owner: str) -> bool:
+    return con.execute(
+        "SELECT 1 FROM readings WHERE id = ? AND owner = ?", (reading_id, owner)
+    ).fetchone() is not None
+
+
+def set_focused_interpretation(
+    reading_id: int, owner: str, position: int, text: str, persona: str | None = None,
+) -> dict | None:
+    """Upsert one card's focused reading. Owner-gated; idempotent (re-stream overwrites)."""
+    with connect() as con:
+        if not _owns(con, reading_id, owner):
+            return None
+        now = int(time.time())
+        con.execute(
+            "INSERT INTO reading_interpretations"
+            " (reading_id, position, kind, text, persona, created_at, updated_at)"
+            " VALUES (?,?, 'focused', ?,?,?,?)"
+            " ON CONFLICT(reading_id, position) DO UPDATE SET"
+            " text = excluded.text, persona = excluded.persona, updated_at = excluded.updated_at",
+            (reading_id, position, text, persona, now, now),
+        )
+        row = con.execute("SELECT * FROM readings WHERE id = ?", (reading_id,)).fetchone()
+        return _reading_dict(con, row, full=True)
+
+
+def set_comprehensive_interpretation(
+    reading_id: int, owner: str, text: str, persona: str | None = None,
+) -> dict | None:
+    """Upsert the whole-spread interpretation and mark the reading complete."""
+    with connect() as con:
+        if not _owns(con, reading_id, owner):
+            return None
+        now = int(time.time())
+        con.execute(
+            "INSERT INTO reading_interpretations"
+            " (reading_id, position, kind, text, persona, created_at, updated_at)"
+            " VALUES (?,?, 'comprehensive', ?,?,?,?)"
+            " ON CONFLICT(reading_id, position) DO UPDATE SET"
+            " text = excluded.text, persona = excluded.persona, updated_at = excluded.updated_at",
+            (reading_id, POSITION_WHOLE, text, persona, now, now),
+        )
+        con.execute(
+            "UPDATE readings SET interpretation_status = 'complete' WHERE id = ?", (reading_id,)
+        )
+        row = con.execute("SELECT * FROM readings WHERE id = ?", (reading_id,)).fetchone()
+        return _reading_dict(con, row, full=True)
+
+
+def get_focused_interpretations(reading_id: int, owner: str) -> dict[int, str]:
+    """position -> focused text, for feeding the comprehensive prompt. Owner-gated."""
+    with connect() as con:
+        if not _owns(con, reading_id, owner):
+            return {}
+        return {
+            ir["position"]: ir["text"]
+            for ir in con.execute(
+                "SELECT position, text FROM reading_interpretations"
+                " WHERE reading_id = ? AND kind = 'focused' ORDER BY position",
+                (reading_id,),
+            )
+        }
 
 
 def set_sharing(reading_id: int, owner: str, visibility: str, grantees: list[str]) -> dict | None:

@@ -15,6 +15,7 @@ user's saved prompt) > user's saved custom prompt > instance override >
 the default built-in persona (Alice).
 """
 
+import json
 import os
 
 import httpx
@@ -153,6 +154,86 @@ def describe_reading(question: str | None, spread_name: str, cards: list[dict]) 
     return "\n".join(lines)
 
 
+def _card_line(card: dict) -> str:
+    pos = card["position"]
+    name = card["card"]["name"] + (" (reversed)" if card.get("reversed") else "")
+    return f"- {pos['name']} ({pos.get('meaning', '')}): {name}"
+
+
+def describe_card(
+    question: str | None,
+    spread_name: str,
+    card: dict,
+    prior: list[tuple[dict, str | None]] | None = None,
+) -> str:
+    """User message for one card's focused reading (guided flow).
+
+    `prior` (cumulative mode) = the already-revealed cards paired with the
+    focused reading each was given, so the model can build the narrative. Omit
+    it (isolated mode) and the card is read on its own.
+    """
+    lines = [f"Spread: {spread_name}"]
+    if question:
+        lines.append(f"Question: {question}")
+    if prior:
+        lines.append("\nCards already revealed:")
+        for pcard, ptext in prior:
+            lines.append(_card_line(pcard))
+            if ptext:
+                lines.append(f"    reading so far: {ptext}")
+    lines.append("\nFocus on this card in its position:")
+    lines.append(_card_line(card))
+    lines.append(
+        "\nGive a focused reading of just this card"
+        + (", developing the reading in light of the cards already revealed."
+           if prior else " in its position.")
+    )
+    return "\n".join(lines)
+
+
+def describe_comprehensive(
+    question: str | None,
+    spread_name: str,
+    cards: list[dict],
+    focused_by_position: dict[int, str],
+) -> str:
+    """User message for the whole-spread synthesis. Ingests the per-card focused
+    readings (a firm requirement — the comprehensive builds on them)."""
+    lines = [f"Spread: {spread_name}"]
+    if question:
+        lines.append(f"Question: {question}")
+    lines.append("\nEach card, with the focused reading it was given:")
+    for i, c in enumerate(cards):
+        lines.append(_card_line(c))
+        text = focused_by_position.get(i)
+        if text:
+            lines.append(f"    focused reading: {text}")
+    lines.append(
+        "\nNow give a comprehensive reading that ties the whole spread together, "
+        "building on the focused readings above and how the cards relate."
+    )
+    return "\n".join(lines)
+
+
+def _chat_body(system_prompt: str, user_content: str, cfg: dict, stream: bool) -> dict:
+    return {
+        "model": cfg["model"],
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "max_tokens": cfg["max_tokens"],
+        **({"stream": True} if stream else {}),
+    }
+
+
+def _auth_headers(cfg: dict) -> dict:
+    headers = {"Content-Type": "application/json"}
+    if cfg["api_key"]:
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    return headers
+
+
 async def interpret(
     question: str | None,
     spread_name: str,
@@ -162,21 +243,48 @@ async def interpret(
     cfg = config()
     if not cfg:
         raise RuntimeError("LLM interpretation is not configured")
-    headers = {"Content-Type": "application/json"}
-    if cfg["api_key"]:
-        headers["Authorization"] = f"Bearer {cfg['api_key']}"
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
             f"{cfg['base_url']}/chat/completions",
-            headers=headers,
-            json={
-                "model": cfg["model"],
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": describe_reading(question, spread_name, cards)},
-                ],
-                "max_tokens": cfg["max_tokens"],
-            },
+            headers=_auth_headers(cfg),
+            json=_chat_body(system_prompt, describe_reading(question, spread_name, cards), cfg, stream=False),
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+async def interpret_stream(system_prompt: str, user_content: str):
+    """Yield text deltas from the LLM as they arrive (OpenAI-compatible SSE).
+
+    Raises RuntimeError if unconfigured. `raise_for_status()` runs before the
+    first yield, so a handshake failure (bad key/model) propagates synchronously
+    and the route can still turn it into a real HTTP status.
+    """
+    cfg = config()
+    if not cfg:
+        raise RuntimeError("LLM interpretation is not configured")
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
+        async with client.stream(
+            "POST",
+            f"{cfg['base_url']}/chat/completions",
+            headers=_auth_headers(cfg),
+            json=_chat_body(system_prompt, user_content, cfg, stream=True),
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if not line or line.startswith(":"):  # blank or SSE keepalive comment
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    return
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+                text = delta.get("content")
+                if text:
+                    yield text

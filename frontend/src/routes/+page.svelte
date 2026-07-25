@@ -5,6 +5,7 @@
 		prefDeck,
 		prefSpread,
 		prefReversals,
+		prefGuidedMode,
 		favDecks,
 		recentDecks,
 		toggleFavDeck,
@@ -18,6 +19,8 @@
 	let error = $state('');
 	let drawing = $state(false);
 	let showAllDecks = $state(false);
+	let llmEnabled = $state(false);
+	let guided = $state(false); // false = quick reading, true = guided walkthrough
 
 	function deckRank(d: DeckSummary): number {
 		if (favDecks.value.includes(d.slug)) return 0;
@@ -51,6 +54,7 @@
 	}
 
 	$effect(() => {
+		api.me().then((m) => (llmEnabled = m.interpretation)).catch(() => {});
 		Promise.all([api.decks(), api.spreads()])
 			.then(([d, s]) => {
 				decks = d;
@@ -58,11 +62,26 @@
 				if (!decks.find((x) => x.slug === prefDeck.value) && decks.length) {
 					prefDeck.value = decks[0].slug;
 				}
+				// Reset a stale saved spread (e.g. a slug left over from a spread
+				// that no longer exists) so the draw can't 404 on it.
+				if (!spreads.find((x) => x.slug === prefSpread.value) && spreads.length) {
+					prefSpread.value = spreads.find((x) => x.slug === 'three-card')?.slug ?? spreads[0].slug;
+				}
 			})
 			.catch((e) => (error = String(e)));
 	});
 
 	async function draw() {
+		// Guard against firing with a no/stale deck or spread (e.g. a slug left in
+		// localStorage that no longer exists) — either 404s the draw.
+		if (!selectedDeck) {
+			error = 'Pick a deck first.';
+			return;
+		}
+		if (!spreads.find((s) => s.slug === prefSpread.value)) {
+			error = 'Pick a spread first.';
+			return;
+		}
 		drawing = true;
 		error = '';
 		try {
@@ -71,13 +90,13 @@
 				prefSpread.value,
 				prefReversals.value === 'true',
 				question.trim() || undefined,
-				includeExtras && (selectedDeck?.extras.length ?? 0) > 0
+				includeExtras && (selectedDeck.extras.length ?? 0) > 0
 			);
 			pushRecentDeck(prefDeck.value);
 			readingStore.set(reading);
-			goto('/reading');
+			goto(guided && llmEnabled ? '/reading/guided' : '/reading');
 		} catch (e) {
-			error = String(e);
+			error = 'Could not draw — try picking a deck again.';
 		} finally {
 			drawing = false;
 		}
@@ -176,10 +195,29 @@
 		</label>
 	{/if}
 
+	{#if llmEnabled}
+		<div class="mode">
+			<label class:on={!guided}>
+				<input type="radio" name="mode" checked={!guided} onchange={() => (guided = false)} />
+				<span>Quick reading</span>
+			</label>
+			<label class:on={guided}>
+				<input type="radio" name="mode" checked={guided} onchange={() => (guided = true)} />
+				<span>Guided walkthrough</span>
+			</label>
+			{#if guided}
+				<select bind:value={prefGuidedMode.value} aria-label="Guided context">
+					<option value="isolated">each card on its own</option>
+					<option value="cumulative">building card on card</option>
+				</select>
+			{/if}
+		</div>
+	{/if}
+
 	{#if error}<p class="error">{error}</p>{/if}
 
-	<button class="primary" onclick={draw} disabled={drawing || !prefDeck.value}>
-		{drawing ? 'Shuffling…' : 'Draw the Cards'}
+	<button class="primary" onclick={draw} disabled={drawing || !selectedDeck}>
+		{drawing ? 'Shuffling…' : guided && llmEnabled ? 'Begin Guided Reading' : 'Draw the Cards'}
 	</button>
 </section>
 
@@ -190,6 +228,30 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1.4rem;
+	}
+
+	.mode {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+	}
+	.mode label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.35rem 0.7rem;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		cursor: pointer;
+		font-size: 0.9rem;
+	}
+	.mode label.on {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.mode select {
+		margin-left: auto;
 	}
 
 	.field > span {

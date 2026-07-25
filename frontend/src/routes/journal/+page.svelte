@@ -49,6 +49,9 @@
 						{:else if r.yours && r.visibility === 'specific'} ·
 							<span class="badge shared">shared with {r.shared_with.length}</span>
 						{/if}
+						{#if r.interpretation?.mode === 'isolated' || r.interpretation?.mode === 'cumulative'}
+							· <span class="badge guided">{r.interpretation.status === 'in_progress' ? 'guided · unfinished' : 'guided'}</span>
+						{/if}
 					</small>
 					{#if r.notes}<small class="notes">{r.notes.slice(0, 120)}</small>{/if}
 				</div>
@@ -108,6 +111,11 @@
 
 	.badge.shared {
 		color: var(--gold);
+	}
+
+	.badge.guided {
+		color: var(--accent);
+		opacity: 0.85;
 	}
 
 	.notes {

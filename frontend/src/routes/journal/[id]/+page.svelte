@@ -170,6 +170,34 @@
 		<CardDetail drawn={sel} {meta} renames={viewDeckInfo} onZoom={() => (zoomed = sel)} />
 	{/if}
 
+	{#if reading.interpretation?.mode}
+		{@const it = reading.interpretation}
+		<section class="guided-readings">
+			<h2>Guided reading</h2>
+			{#if it.status === 'in_progress'}
+				<p class="dim">
+					This reading is unfinished.
+					{#if reading.yours}<a href="/reading/guided?id={reading.id}">Continue it</a>.{/if}
+				</p>
+			{/if}
+			{#each reading.cards as drawn, i (i)}
+				{#if it.focused?.[String(i)]}
+					<div class="fr">
+						<h3>{deckCardName(drawn.card.name, viewDeckInfo)}{drawn.reversed ? ' (reversed)' : ''}
+							<span class="dim">· {drawn.position.name}</span></h3>
+						<p>{it.focused[String(i)]}</p>
+					</div>
+				{/if}
+			{/each}
+			{#if it.comprehensive}
+				<div class="fr whole">
+					<h3>The whole picture</h3>
+					{#each it.comprehensive.split('\n\n') as para, i (i)}<p>{para}</p>{/each}
+				</div>
+			{/if}
+		</section>
+	{/if}
+
 	{#if reading.yours}
 		<section class="notes">
 			<h2>Notes</h2>
@@ -357,6 +385,25 @@
 		color: var(--text-dim);
 		font-size: 0.75rem;
 		text-align: center;
+	}
+
+	.guided-readings {
+		margin-top: 2rem;
+	}
+	.guided-readings .fr {
+		margin-bottom: 1.2rem;
+	}
+	.guided-readings h3 {
+		margin: 0 0 0.3rem;
+		font-size: 1rem;
+	}
+	.guided-readings p {
+		margin: 0 0 0.5rem;
+		line-height: 1.6;
+	}
+	.guided-readings .whole {
+		padding-top: 1rem;
+		border-top: 1px solid var(--border);
 	}
 
 	.notes {
