@@ -749,12 +749,13 @@ def _resolve_persona_or_400(persona: str | None, user: str) -> str:
 
 
 def _stream_and_persist(request: Request, user: str, persona: str | None,
-                        system_prompt: str, user_content: str, persist):
+                        system_prompt: str, user_content: str, persist,
+                        max_tokens: int | None = None):
     """Shared SSE generator: stream deltas, then persist the full text at natural
     completion only (skipped on disconnect / mid-stream error), then `done`."""
     async def gen():
         parts: list[str] = []
-        agen = interp.interpret_stream(system_prompt, user_content)
+        agen = interp.interpret_stream(system_prompt, user_content, max_tokens=max_tokens)
         try:
             async for delta in agen:
                 if await request.is_disconnected():
@@ -820,7 +821,15 @@ def interpret_comprehensive(reading_id: int, req: StreamInterpretRequest,
     def persist(text: str):
         db.set_comprehensive_interpretation(reading_id, user, text, persona=req.persona)
 
-    return _stream_and_persist(request, user, req.persona, prompt, content, persist)
+    # The comprehensive synthesis grows with the spread — a 10-card Celtic Cross
+    # walkthrough truncated at the default cap. Give it room scaled to card count
+    # (never below the configured cap).
+    n = len(reading["cards"])
+    cfg = interp.config()
+    base = (cfg or {}).get("max_tokens") or interp.DEFAULT_MAX_TOKENS
+    max_tokens = max(base, 400 + 220 * n)
+    return _stream_and_persist(request, user, req.persona, prompt, content, persist,
+                               max_tokens=max_tokens)
 
 
 class SpaStaticFiles(StaticFiles):

@@ -223,14 +223,15 @@ def describe_comprehensive(
     return "\n".join(lines)
 
 
-def _chat_body(system_prompt: str, user_content: str, cfg: dict, stream: bool) -> dict:
+def _chat_body(system_prompt: str, user_content: str, cfg: dict, stream: bool,
+               max_tokens: int | None = None) -> dict:
     return {
         "model": cfg["model"],
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
-        "max_tokens": cfg["max_tokens"],
+        "max_tokens": max_tokens or cfg["max_tokens"],
         **({"stream": True} if stream else {}),
     }
 
@@ -261,9 +262,11 @@ async def interpret(
         return resp.json()["choices"][0]["message"]["content"].strip()
 
 
-async def interpret_stream(system_prompt: str, user_content: str):
+async def interpret_stream(system_prompt: str, user_content: str, max_tokens: int | None = None):
     """Yield text deltas from the LLM as they arrive (OpenAI-compatible SSE).
 
+    `max_tokens` overrides the configured cap for this call (the comprehensive
+    reading of a large spread needs far more room than a focused card reading).
     Raises RuntimeError if unconfigured. `raise_for_status()` runs before the
     first yield, so a handshake failure (bad key/model) propagates synchronously
     and the route can still turn it into a real HTTP status.
@@ -276,7 +279,7 @@ async def interpret_stream(system_prompt: str, user_content: str):
             "POST",
             f"{cfg['base_url']}/chat/completions",
             headers=_auth_headers(cfg),
-            json=_chat_body(system_prompt, user_content, cfg, stream=True),
+            json=_chat_body(system_prompt, user_content, cfg, stream=True, max_tokens=max_tokens),
         ) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
