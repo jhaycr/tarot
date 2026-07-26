@@ -175,11 +175,11 @@
 		{@const it = reading.interpretation}
 		<section class="guided-readings">
 			<h2>Guided reading</h2>
-			{#if it.status === 'in_progress'}
-				<p class="dim">
-					This reading is unfinished.
-					{#if reading.yours}<a href="/reading/guided?id={reading.id}">Continue it</a>.{/if}
-				</p>
+			{#if it.status === 'in_progress' && reading.yours}
+				<div class="unfinished">
+					<span class="dim">This reading is unfinished.</span>
+					<a class="continue" href="/reading/guided?id={reading.id}">Continue reading →</a>
+				</div>
 			{/if}
 			{#each reading.cards as drawn, i (i)}
 				{#if it.focused?.[String(i)]}
@@ -390,6 +390,20 @@
 
 	.guided-readings {
 		margin-top: 2rem;
+	}
+	.unfinished {
+		display: flex;
+		align-items: center;
+		gap: 0.8rem;
+		flex-wrap: wrap;
+		margin-bottom: 1rem;
+		padding: 0.6rem 0.9rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+	}
+	.continue {
+		color: var(--accent);
+		font-weight: 600;
 	}
 	.guided-readings .fr {
 		margin-bottom: 1.2rem;

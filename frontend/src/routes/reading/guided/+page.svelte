@@ -4,13 +4,16 @@
 	import { page } from '$app/state';
 	import {
 		api,
+		cardMeta,
 		deckCardName,
+		type Card as CardType,
 		type DeckSummary,
 		type DrawnCard,
 		type Persona,
 		type SavedReading
 	} from '$lib/api';
 	import Card from '$lib/Card.svelte';
+	import CardDetail from '$lib/CardDetail.svelte';
 	import { toParagraphs } from '$lib/text';
 	import { readingStore } from '$lib/reading.svelte';
 	import { prefPersona, prefGuidedMode } from '$lib/prefs.svelte';
@@ -20,7 +23,10 @@
 	const resumeId = $derived(page.url.searchParams.get('id'));
 
 	let reading = $state<SavedReading | null>(null);
-	let deckInfo = $state<DeckSummary | null>(null);
+	let decks = $state<DeckSummary[]>([]);
+	// Derived, not set in a .then — api.decks() often resolves before `reading`
+	// is assigned, which would strand deckInfo at null (deck renames/name/back).
+	const deckInfo = $derived(decks.find((d) => d.slug === reading?.deck) ?? null);
 	let personas = $state<Persona[]>([]);
 	let persona = $state<string | null>(null);
 	let error = $state('');
@@ -31,6 +37,8 @@
 	let comprehensive = $state('');
 	let flipped = $state<boolean[]>([]);
 	let streaming = $state<number | 'comprehensive' | null>(null);
+	let zoomed = $state<DrawnCard | null>(null);
+	let meta = $state<CardType[]>([]);
 	let ctrl: AbortController | null = null;
 
 	const cards = $derived(reading?.cards ?? []);
@@ -47,13 +55,12 @@
 
 	async function init() {
 		try {
-			api.decks().then((d) => {
-				if (reading) deckInfo = d.find((x) => x.slug === reading!.deck) ?? null;
-			});
+			api.decks().then((d) => (decks = d));
 			api.personas().then((p) => {
 				personas = p.personas;
 				persona = prefPersona.value;
 			});
+			cardMeta().then((m) => (meta = m));
 
 			if (resumeId) {
 				reading = await api.reading(Number(resumeId));
@@ -95,7 +102,9 @@
 	}
 
 	async function flip(i: number) {
-		if (!reading || flipped[i] || streaming !== null) return;
+		// Reveal in order: only the next unflipped card is flippable, so
+		// cumulative mode always has the prior cards' readings to build on.
+		if (!reading || flipped[i] || streaming !== null || i !== nextIdx) return;
 		flipped[i] = true;
 		if (!focused[i]) await streamFocused(i);
 	}
@@ -104,16 +113,22 @@
 		if (!reading) return;
 		streaming = i;
 		focused[i] = '';
+		error = '';
 		ctrl = new AbortController();
+		let ok = false;
 		try {
 			for await (const ev of api.streamFocused(reading.id, i, persona, ctrl.signal)) {
 				if (ev.type === 'token') focused[i] += ev.data.text;
+				else if (ev.type === 'done') ok = true;
 				else if (ev.type === 'error') error = ev.data.message;
 			}
 		} catch (e) {
 			if ((e as Error).name !== 'AbortError') error = String(e);
 		} finally {
 			streaming = null;
+			// Failed/aborted mid-stream: drop the un-persisted partial so the
+			// "Read this card" retry button shows instead of stranding it.
+			if (!ok) focused[i] = '';
 		}
 	}
 
@@ -123,21 +138,42 @@
 		comprehensive = '';
 		error = '';
 		ctrl = new AbortController();
+		let ok = false;
 		try {
 			for await (const ev of api.streamComprehensive(reading.id, persona, ctrl.signal)) {
 				if (ev.type === 'token') comprehensive += ev.data.text;
+				else if (ev.type === 'done') ok = true;
 				else if (ev.type === 'error') error = ev.data.message;
 			}
 		} catch (e) {
 			if ((e as Error).name !== 'AbortError') error = String(e);
 		} finally {
 			streaming = null;
+			if (!ok) comprehensive = ''; // failed: show the Reveal button again to retry
 		}
 	}
 
 	function retryFocused(i: number) {
 		error = '';
 		streamFocused(i);
+	}
+
+	let discarding = $state(false);
+	async function discard() {
+		if (!reading || discarding) return;
+		const done = reading.interpretation.status === 'complete';
+		if (!confirm(done ? 'Delete this reading from your journal?' : 'Discard this unfinished reading?'))
+			return;
+		discarding = true;
+		ctrl?.abort(); // stop any in-flight stream before deleting
+		try {
+			await api.deleteReading(reading.id);
+			readingStore.set(null);
+			goto('/');
+		} catch (e) {
+			error = String(e);
+			discarding = false;
+		}
 	}
 </script>
 
@@ -156,13 +192,22 @@
 			<div class="actions">
 				<a class="link" href="/journal/{reading.id}">Saved to journal ✓</a>
 				<button onclick={() => { readingStore.set(null); goto('/'); }}>New reading</button>
+				<button class="danger" onclick={discard} disabled={discarding}>
+					{discarding ? 'Discarding…' : 'Discard'}
+				</button>
 			</div>
 		</header>
 
 		<ol class="cards">
 			{#each cards as drawn, i (i)}
 				<li class:isnext={i === nextIdx && streaming === null}>
-					<div class="cardcol">
+					<!-- Card stops propagation on a face-down click (which flips it), so a
+					     click that reaches here is a face-up card -> show full-size art. -->
+					<div
+						class="cardcol"
+						role="presentation"
+						onclick={() => { if (flipped[i]) zoomed = drawn; }}
+					>
 						<Card
 							{drawn}
 							deck={reading.deck}
@@ -213,9 +258,95 @@
 
 		{#if error}<p class="error">{error}</p>{/if}
 	</section>
+
+	{#if zoomed}
+		<div class="lightbox" role="presentation" onclick={() => (zoomed = null)}>
+			<div class="zoomview">
+				<figure role="presentation" onclick={(e) => e.stopPropagation()}>
+					<img src={api.cardImage(reading.deck, zoomed.card.index)} alt={zoomed.card.name} />
+					<figcaption>
+						{cardName(zoomed)}{zoomed.reversed ? ' (reversed)' : ''} — {zoomed.position.name}
+					</figcaption>
+				</figure>
+				<div class="zoominfo" role="presentation" onclick={(e) => e.stopPropagation()}>
+					<CardDetail drawn={zoomed} {meta} renames={deckInfo ?? undefined} />
+				</div>
+				<button class="zoomclose" onclick={() => (zoomed = null)} aria-label="Close">✕</button>
+			</div>
+		</div>
+	{/if}
 {/if}
 
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape') zoomed = null; }} />
+
 <style>
+	.cardcol {
+		cursor: pointer;
+	}
+	.lightbox {
+		position: fixed;
+		inset: 0;
+		background: rgba(10, 8, 20, 0.88);
+		display: grid;
+		place-items: center;
+		z-index: 20;
+		cursor: zoom-out;
+		padding: 1.5rem;
+	}
+	.zoomview {
+		position: relative;
+		display: flex;
+		gap: 1.5rem;
+		align-items: flex-start;
+		max-width: min(64rem, 96vw);
+		max-height: 90dvh;
+		cursor: default;
+	}
+	.zoomview figure {
+		margin: 0;
+		text-align: center;
+		flex: 0 0 auto;
+	}
+	.zoomview img {
+		max-height: 80dvh;
+		max-width: min(48vw, 26rem);
+		border-radius: 10px;
+	}
+	.zoomview figcaption {
+		margin-top: 0.6rem;
+		color: var(--gold-bright);
+	}
+	.zoominfo {
+		flex: 1 1 22rem;
+		max-width: 26rem;
+		max-height: 80dvh;
+		overflow-y: auto;
+	}
+	.zoominfo :global(.detail) {
+		margin: 0;
+	}
+	.zoomclose {
+		position: absolute;
+		top: -0.6rem;
+		right: -0.6rem;
+		border-radius: 999px;
+		width: 2rem;
+		height: 2rem;
+		padding: 0;
+		line-height: 1;
+	}
+	@media (max-width: 640px) {
+		.zoomview {
+			flex-direction: column;
+			align-items: center;
+			overflow-y: auto;
+		}
+		.zoomview img {
+			max-width: 80vw;
+			max-height: 55dvh;
+		}
+	}
+
 	.head {
 		display: flex;
 		justify-content: space-between;
@@ -234,6 +365,9 @@
 	}
 	.link {
 		color: var(--accent);
+	}
+	.danger {
+		border-color: var(--danger);
 	}
 	.cards {
 		list-style: none;

@@ -11,7 +11,6 @@
 	let decks = $state<DeckSummary[]>([]);
 	let meta = $state<CardType[]>([]);
 	let flips = $state<boolean[]>(reading ? reading.cards.map(() => false) : []);
-	let selected = $state<number | null>(null);
 	let zoomed = $state<DrawnCard | null>(null);
 	let savedId = $state<number | null>(null);
 	let saving = $state(false);
@@ -63,8 +62,8 @@
 	}
 
 	function slotClick(i: number) {
-		if (!flips[i]) return;
-		selected = selected === i ? null : i;
+		if (!flips[i] || !reading) return;
+		zoomed = reading.cards[i]; // face-up card click -> full-size art
 	}
 
 	function revealAll() {
@@ -98,14 +97,7 @@
 	}
 </script>
 
-<svelte:window
-	onkeydown={(e) => {
-		if (e.key === 'Escape') {
-			if (zoomed) zoomed = null;
-			else selected = null;
-		}
-	}}
-/>
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape') zoomed = null; }} />
 
 {#if reading}
 	<section class="reading">
@@ -139,7 +131,6 @@
 								<div
 									class="slot"
 									class:overlay={drawn.position.cross}
-									class:selected={selected === i}
 									role="presentation"
 									onclick={() => slotClick(i)}
 								>
@@ -151,25 +142,12 @@
 										cross={drawn.position.cross ?? false}
 										next={i === nextIdx}
 										keywords={keywordsFor(drawn)}
-										showTip={selected !== i}
 										bind:flipped={
 											() => flips[i],
 											(v) => { flips[i] = v; }
 										}
 									/>
 									<span class="pos" class:nextpos={i === nextIdx && !flips[i]}>{drawn.position.name}</span>
-
-									{#if selected === i && flips[i]}
-										<div
-											class="popover"
-											class:flip-left={drawn.position.col > cols / 2}
-											role="presentation"
-											onclick={(e) => e.stopPropagation()}
-										>
-											<button class="close" onclick={() => (selected = null)} aria-label="Close">✕</button>
-											<CardDetail {drawn} {meta} renames={deckInfo} onZoom={() => (zoomed = drawn)} />
-										</div>
-									{/if}
 								</div>
 							{/each}
 						</div>
@@ -205,12 +183,18 @@
 
 	{#if zoomed}
 		<div class="lightbox" role="presentation" onclick={() => (zoomed = null)}>
-			<figure>
-				<img src={api.cardImage(reading.deck, zoomed.card.index)} alt={zoomed.card.name} />
-				<figcaption>
-					{zoomed.card.name}{zoomed.reversed ? ' (reversed)' : ''} — {zoomed.position.name}
-				</figcaption>
-			</figure>
+			<div class="zoomview">
+				<figure role="presentation" onclick={(e) => e.stopPropagation()}>
+					<img src={api.cardImage(reading.deck, zoomed.card.index)} alt={zoomed.card.name} />
+					<figcaption>
+						{cardDisplayName(zoomed)}{zoomed.reversed ? ' (reversed)' : ''} — {zoomed.position.name}
+					</figcaption>
+				</figure>
+				<div class="zoominfo" role="presentation" onclick={(e) => e.stopPropagation()}>
+					<CardDetail drawn={zoomed} {meta} renames={deckInfo} />
+				</div>
+				<button class="zoomclose" onclick={() => (zoomed = null)} aria-label="Close">✕</button>
+			</div>
 		</div>
 	{/if}
 {/if}
@@ -267,21 +251,12 @@
 		pointer-events: none;
 	}
 
-	.slot.overlay :global(.card),
-	.slot.overlay .popover {
+	.slot.overlay :global(.card) {
 		pointer-events: auto;
 	}
 
 	.slot.overlay .pos {
 		display: none;
-	}
-
-	.slot.selected {
-		z-index: 12;
-	}
-
-	.slot.selected .pos {
-		color: var(--gold);
 	}
 
 	.pos {
@@ -292,58 +267,6 @@
 
 	.pos.nextpos {
 		color: var(--gold);
-	}
-
-	.popover {
-		position: absolute;
-		top: -0.4rem;
-		left: calc(100% + 0.7rem);
-		width: 18rem;
-		z-index: 12;
-		background: var(--bg-raised);
-		border: 1px solid var(--gold);
-		border-radius: var(--radius);
-		box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
-		cursor: default;
-	}
-
-	.popover.flip-left {
-		left: auto;
-		right: calc(100% + 0.7rem);
-	}
-
-	.popover :global(.detail) {
-		margin: 0;
-		max-width: none;
-		background: none;
-		border: none;
-		padding: 0.9rem 2rem 0.4rem 1rem;
-	}
-
-	.popover .close {
-		position: absolute;
-		top: 0.4rem;
-		right: 0.4rem;
-		padding: 0.15rem 0.45rem;
-		font-size: 0.8rem;
-		border-radius: 6px;
-	}
-
-	.popover :global(.detail .zoom) {
-		margin: 0 0 0.5rem;
-	}
-
-	@media (max-width: 700px) {
-		.popover,
-		.popover.flip-left {
-			position: fixed;
-			inset: auto 0 0 0;
-			width: auto;
-			max-height: 65dvh;
-			overflow-y: auto;
-			border-radius: var(--radius) var(--radius) 0 0;
-			border-bottom: none;
-		}
 	}
 
 	.dim {
@@ -386,22 +309,68 @@
 		place-items: center;
 		z-index: 20;
 		cursor: zoom-out;
+		padding: 1.5rem;
 	}
 
-	.lightbox figure {
+	.zoomview {
+		position: relative;
+		display: flex;
+		gap: 1.5rem;
+		align-items: flex-start;
+		max-width: min(64rem, 96vw);
+		max-height: 90dvh;
+		cursor: default;
+	}
+
+	.zoomview figure {
 		margin: 0;
 		text-align: center;
+		flex: 0 0 auto;
 	}
 
-	.lightbox img {
-		max-height: 84dvh;
-		max-width: 92vw;
+	.zoomview img {
+		max-height: 80dvh;
+		max-width: min(48vw, 26rem);
 		border-radius: 10px;
 	}
 
-	.lightbox figcaption {
+	.zoomview figcaption {
 		margin-top: 0.6rem;
 		color: var(--gold-bright);
+	}
+
+	.zoominfo {
+		flex: 1 1 22rem;
+		max-width: 26rem;
+		max-height: 80dvh;
+		overflow-y: auto;
+	}
+
+	.zoominfo :global(.detail) {
+		margin: 0;
+	}
+
+	.zoomclose {
+		position: absolute;
+		top: -0.6rem;
+		right: -0.6rem;
+		border-radius: 999px;
+		width: 2rem;
+		height: 2rem;
+		padding: 0;
+		line-height: 1;
+	}
+
+	@media (max-width: 640px) {
+		.zoomview {
+			flex-direction: column;
+			align-items: center;
+			overflow-y: auto;
+		}
+		.zoomview img {
+			max-width: 80vw;
+			max-height: 55dvh;
+		}
 	}
 
 	@media (max-width: 640px) {

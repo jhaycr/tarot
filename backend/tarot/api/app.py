@@ -754,10 +754,14 @@ def _stream_and_persist(request: Request, user: str, persona: str | None,
     completion only (skipped on disconnect / mid-stream error), then `done`."""
     async def gen():
         parts: list[str] = []
+        agen = interp.interpret_stream(system_prompt, user_content)
         try:
-            async for delta in interp.interpret_stream(system_prompt, user_content):
+            async for delta in agen:
                 if await request.is_disconnected():
-                    return  # client left — stop consuming the LLM, persist nothing
+                    # Client left — close the upstream stream now (don't wait for
+                    # GC) so we stop paying the LLM; persist nothing.
+                    await agen.aclose()
+                    return
                 parts.append(delta)
                 yield sse.sse("token", {"text": delta})
         except httpx.HTTPError as e:

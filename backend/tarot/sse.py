@@ -9,10 +9,16 @@ import json
 
 
 def sse(event: str, data: dict | str) -> str:
-    """One SSE event: a named event line + a data line + the blank-line
-    terminator. Missing the double newline makes the browser buffer forever."""
+    """One SSE event: a named event line + data line(s) + the blank-line
+    terminator. Missing the double newline makes the browser buffer forever.
+
+    A multi-line string payload is split into one `data:` line per line, per the
+    SSE spec (a raw newline inside a single data line would truncate the event).
+    JSON-encoded dicts never contain raw newlines, so they stay one line.
+    """
     payload = data if isinstance(data, str) else json.dumps(data)
-    return f"event: {event}\ndata: {payload}\n\n"
+    body = "".join(f"data: {line}\n" for line in payload.split("\n"))
+    return f"event: {event}\n{body}\n"
 
 
 # Response headers for a text/event-stream. X-Accel-Buffering:no is harmless with
