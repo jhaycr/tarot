@@ -115,7 +115,7 @@
 	<section>
 		<h2>Decks you've published</h2>
 		{#if account.published_decks.length === 0}
-			<p class="dim">You haven't published any decks to the family library.</p>
+			<p class="dim">You haven't published any decks to the shared library.</p>
 		{:else}
 			<ul class="shares">
 				{#each account.published_decks as d (d.slug)}

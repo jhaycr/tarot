@@ -30,7 +30,7 @@
 			// which lives on the deck detail page, so point there.
 			deckError =
 				err instanceof Error && err.message.includes('409')
-					? `A deck named “${deck.slug}” is already in the family library. Rename yours before publishing.`
+					? `A deck named “${deck.slug}” is already in the shared library. Rename yours before publishing.`
 					: 'Could not publish the deck.';
 		}
 		await refresh();
@@ -162,7 +162,7 @@
 		files <code>00</code>–<code>77</code> to map them explicitly (majors 0–21, then
 		wands, cups, swords, pentacles: ace, 2–10, page, knight, queen, king). Include
 		<code>back.jpg</code> for a card back. Starts as a private draft — publish it
-		to share with the family.
+		to the shared library when it's ready.
 	</p>
 	<div class="row">
 		<input type="text" placeholder="Deck name" bind:value={uploadName} />
@@ -189,7 +189,7 @@
 			{#if deck.published && deck.published_by}· <span class="badge">by {deck.published_by}</span>{/if}
 		</small>
 		{#if deck.yours}
-			<button class="share" onclick={(e) => publish(deck, e)}>Publish to family</button>
+			<button class="share" onclick={(e) => publish(deck, e)}>Publish to library</button>
 		{:else if deck.can_unpublish}
 			<button class="share" onclick={(e) => unpublish(deck, e)}>Unpublish</button>
 		{/if}
@@ -203,7 +203,7 @@
 	</div>
 {/if}
 
-<h2 class="section">Family library</h2>
+<h2 class="section">Shared library</h2>
 <div class="grid">
 	{#each library as deck (deck.slug)}{@render deckCard(deck)}{/each}
 </div>

@@ -2,11 +2,11 @@
 
 Deck tiers and visibility:
 - builtin  decks (shipped in the image)          -> everyone
-- library  decks ($TAROT_DATA_DIR/decks)         -> everyone (the family pool)
+- library  decks ($TAROT_DATA_DIR/decks)         -> everyone (the shared pool)
 - staging  decks ($TAROT_DATA_DIR/users/<u>/decks) -> their owner ONLY
 
 A deck is either a private draft in someone's staging or published to the
-family library — there is no per-person deck sharing. Publishing MOVES the
+shared library — there is no per-person deck sharing. Publishing MOVES the
 folder into the library and records `published_by` in its manifest; the move is
 a same-filesystem rename, so it is atomic and preserves the dedupe hardlinks.
 """
@@ -198,7 +198,7 @@ def update_manifest(deck_path: Path, **changes) -> None:
 
 
 def publish_deck(user: str, slug: str, now: int) -> Deck | None:
-    """Move `user`'s staging deck into the family library.
+    """Move `user`'s staging deck into the shared library.
 
     Returns None if `user` has no such staging deck (caller -> 404); raises
     DeckConflict if the library slug is taken.
@@ -256,7 +256,7 @@ def delete_deck(user: str, slug: str) -> bool:
 
 def migrate_publish_decks(now: int) -> tuple[list[str], list[str]]:
     """One-time migration: move every deck that was shared under the old flag —
-    plus everything the system user (`local`) staged — into the family library.
+    plus everything the system user (`local`) staged — into the shared library.
 
     `local` is a shared LAN pseudo-user with no privacy expectation, so all of
     its decks are published; other users only have their explicitly `shared`

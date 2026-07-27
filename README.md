@@ -3,7 +3,7 @@
 *A planetarium for the cards: seventy-eight small skies to sit under.*
 
 Multi-deck tarot reader for your homelab: draws and spreads, card meanings,
-guided card-by-card readings, a journal, a family deck library, multi-user
+guided card-by-card readings, a journal, a shared deck library, multi-user
 support behind an authenticating proxy, optional LLM interpretation with
 selectable reader personas, and a deck downloader (`tarot-dl`). Ships as a
 single container: FastAPI backend + SvelteKit PWA frontend (installable on
@@ -73,7 +73,7 @@ docker run -p 8000:8000 -v ./data:/data tarotarium
   different deck's art
 - **Decks** — drop-in deck folders; bundled public-domain Rider–Waite–Smith
   (1909 scans via Wikimedia Commons); private drafts you can publish to a
-  shared family library; zip upload/export; per-deck suit and card renames;
+  shared library; zip upload/export; per-deck suit and card renames;
   deck-specific extra cards beyond the canonical 78
 - **Deck tooling** — `tarot-dl` downloads decks by URL (site adapters, Fandom
   wikis, Wayback Machine snapshots, URL templates, local folders); `tarot-slice`

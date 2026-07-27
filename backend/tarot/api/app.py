@@ -209,7 +209,7 @@ def _deck_view(d, user: str) -> dict:
 
 @app.post("/api/decks/{slug}/publish")
 def publish_deck(slug: str, user: User):
-    """Move one of your private drafts into the shared family library."""
+    """Move one of your private drafts into the shared library."""
     try:
         deck = decks_mod.publish_deck(user, slug, int(time.time()))
     except DeckConflict:

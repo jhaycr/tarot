@@ -117,7 +117,7 @@ def _m2_reading_visibility(con: sqlite3.Connection) -> None:
 
 
 def _m3_publish_decks(con: sqlite3.Connection) -> None:
-    """Publish legacy shared decks (and all of `local`'s decks) into the family
+    """Publish legacy shared decks (and all of `local`'s decks) into the shared
     library. Filesystem-only — no schema change; gated by schema_version so it
     runs exactly once. See decks.migrate_publish_decks for the policy.
     """
