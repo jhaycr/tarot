@@ -3,6 +3,9 @@
 Examples:
     tarot-dl rws                      # or 'marseille' for the Dodal trumps
     tarot-dl https://elvitarot.com/decks/tarot/modern-witch-tarot
+    tarot-dl https://cyberpunk.fandom.com/wiki/Cyberpunk_2077_Tarot_Cards
+    tarot-dl 'https://megamitensei.fandom.com/wiki/Category:Persona_5_Cards' --slug persona-5
+    tarot-dl 'http://web.archive.org/web/20130802201422/http://www.lunarbistro.com/art/8-bit_tarot/'
     tarot-dl 'https://example.com/deck/{n}.jpg' --slug my-deck --name 'My Deck'
     tarot-dl ~/Pictures/Tarot/Stick --name 'Stick Figure Tarot'   # local folder import
 

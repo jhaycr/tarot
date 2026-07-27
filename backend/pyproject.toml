@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-slice = ["numpy>=1.24"]  # tarot-slice only; kept out of the runtime image
+slice = ["numpy>=1.24", "pypdfium2>=4"]  # tarot-slice only; kept out of the runtime image
 
 [project.scripts]
 tarot-dl = "tarot.downloader.cli:main"
