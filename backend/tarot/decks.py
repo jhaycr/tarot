@@ -12,6 +12,7 @@ a same-filesystem rename, so it is atomic and preserves the dedupe hardlinks.
 """
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -238,6 +239,19 @@ def unpublish_deck(user: str, slug: str, is_admin: bool, now: int) -> Deck | Non
     src.rename(dest)
     update_manifest(dest, published_by=None, published_at=None)
     return _load_deck(dest, owner=target, tier=STAGING)
+
+
+def delete_deck(user: str, slug: str) -> bool:
+    """Delete `user`'s staging draft outright. Returns False if there is no
+    such draft (caller -> 404). Builtin and library decks are never touched —
+    a published deck must be unpublished back to a draft first, which also
+    keeps deletion scoped to folders under the caller's own staging dir.
+    """
+    target = user_decks_dir(user) / slug
+    if not (target / "manifest.yaml").is_file():
+        return False
+    shutil.rmtree(target)
+    return True
 
 
 def migrate_publish_decks(now: int) -> tuple[list[str], list[str]]:

@@ -1,17 +1,37 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api, deckCardName, type Card, type DeckSummary } from '$lib/api';
+	import Lightbox from '$lib/Lightbox.svelte';
 
 	const slug = $derived(page.params.slug!);
 
 	let cards = $state<Card[]>([]);
 	let deck = $state<DeckSummary | undefined>(undefined);
-	let zoomed = $state<{ index: number; name: string } | null>(null);
+	// canonical is the real card name (index <78) that keys meanings + renames;
+	// extras just carry their display name.
+	let zoomed = $state<{ index: number; canonical: string } | null>(null);
+	let deleting = $state(false);
+	let deleteError = $state('');
 
 	$effect(() => {
 		api.cards().then((c) => (cards = c));
 		api.decks().then((d) => (deck = d.find((x) => x.slug === slug)));
 	});
+
+	async function remove() {
+		if (!deck || deleting) return;
+		if (!confirm(`Delete the deck “${deck.name}” and its images? This cannot be undone.`)) return;
+		deleting = true;
+		deleteError = '';
+		try {
+			await api.deleteDeck(slug);
+			goto('/decks');
+		} catch {
+			deleteError = 'Could not delete the deck.';
+			deleting = false;
+		}
+	}
 
 	const ROMAN = ['0', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII',
 		'XIII', 'XIV', 'XV', 'XVI', 'XVII', 'XVIII', 'XIX', 'XX', 'XXI'];
@@ -34,13 +54,22 @@
 	);
 
 	const sections = $derived.by(() => {
-		const secs: { id: string; title: string; cards: { index: number; name: string; numeral: string }[] }[] = [];
+		const secs: {
+			id: string;
+			title: string;
+			cards: { index: number; name: string; canonical: string; numeral: string }[];
+		}[] = [];
 		const majors = cards.filter((c) => c.arcana === 'major' && has(c.index));
 		if (majors.length)
 			secs.push({
 				id: 'majors',
 				title: 'Major Arcana',
-				cards: majors.map((c) => ({ index: c.index, name: displayName(c), numeral: numeral(c) }))
+				cards: majors.map((c) => ({
+					index: c.index,
+					name: displayName(c),
+					canonical: c.name,
+					numeral: numeral(c)
+				}))
 			});
 		for (const suit of ['Wands', 'Cups', 'Swords', 'Pentacles']) {
 			const suited = cards.filter((c) => c.suit === suit && has(c.index));
@@ -52,6 +81,7 @@
 					cards: suited.map((c) => ({
 						index: c.index,
 						name: deckCardName(c.name, deck),
+						canonical: c.name,
 						numeral: numeral(c)
 					}))
 				});
@@ -60,7 +90,12 @@
 			secs.push({
 				id: 'extras',
 				title: 'Extras',
-				cards: deck.extras.map((e, i) => ({ index: e.index, name: e.name, numeral: `+${i + 1}` }))
+				cards: deck.extras.map((e, i) => ({
+					index: e.index,
+					name: e.name,
+					canonical: e.name,
+					numeral: `+${i + 1}`
+				}))
 			});
 		return secs;
 	});
@@ -78,8 +113,17 @@
 			</p>
 		{/if}
 	</div>
-	<a class="export" href="/api/decks/{slug}/export" download="{slug}.zip">⇩ Export zip</a>
+	<div class="topactions">
+		<a class="export" href="/api/decks/{slug}/export" download="{slug}.zip">⇩ Export zip</a>
+		{#if deck?.yours}
+			<button class="danger" onclick={remove} disabled={deleting}>
+				{deleting ? 'Deleting…' : 'Delete deck'}
+			</button>
+		{/if}
+	</div>
 </header>
+
+{#if deleteError}<p class="error">{deleteError}</p>{/if}
 
 {#if sections.length > 1}
 	<nav class="secnav">
@@ -107,12 +151,13 @@
 {/each}
 
 {#if zoomed}
-	<div class="lightbox" role="presentation" onclick={() => (zoomed = null)}>
-		<figure>
-			<img src={api.cardImage(slug, zoomed.index)} alt={zoomed.name} />
-			<figcaption>{zoomed.name}</figcaption>
-		</figure>
-	</div>
+	<Lightbox
+		deck={slug}
+		view={{ card: { index: zoomed.index, name: zoomed.canonical }, reversed: false }}
+		meta={cards}
+		renames={deck}
+		onclose={() => (zoomed = null)}
+	/>
 {/if}
 
 <style>
@@ -133,6 +178,20 @@
 
 	.export:hover {
 		border-color: var(--gold);
+	}
+
+	.topactions {
+		display: flex;
+		gap: 0.6rem;
+		align-items: center;
+	}
+
+	.danger {
+		border-color: var(--danger);
+	}
+
+	.error {
+		color: var(--danger);
 	}
 
 	.secnav {
@@ -208,32 +267,6 @@
 		min-width: 1.3em;
 		color: var(--gold);
 		font-variant: small-caps;
-	}
-
-	.lightbox {
-		position: fixed;
-		inset: 0;
-		background: rgba(10, 8, 20, 0.85);
-		display: grid;
-		place-items: center;
-		z-index: 10;
-		cursor: zoom-out;
-	}
-
-	.lightbox figure {
-		margin: 0;
-		text-align: center;
-	}
-
-	.lightbox img {
-		max-height: 82dvh;
-		max-width: 92vw;
-		border-radius: 10px;
-	}
-
-	.lightbox figcaption {
-		margin-top: 0.6rem;
-		color: var(--gold-bright);
 	}
 
 	.dim {

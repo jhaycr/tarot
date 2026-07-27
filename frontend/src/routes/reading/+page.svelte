@@ -3,7 +3,7 @@
 	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type Persona } from '$lib/api';
 	import { prefPersona } from '$lib/prefs.svelte';
 	import Card from '$lib/Card.svelte';
-	import CardDetail from '$lib/CardDetail.svelte';
+	import Lightbox from '$lib/Lightbox.svelte';
 	import { readingStore } from '$lib/reading.svelte';
 
 	const reading = readingStore.current;
@@ -97,8 +97,6 @@
 	}
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === 'Escape') zoomed = null; }} />
-
 {#if reading}
 	<section class="reading">
 		<header class="head">
@@ -182,20 +180,7 @@
 	</section>
 
 	{#if zoomed}
-		<div class="lightbox" role="presentation" onclick={() => (zoomed = null)}>
-			<div class="zoomview">
-				<figure role="presentation" onclick={(e) => e.stopPropagation()}>
-					<img src={api.cardImage(reading.deck, zoomed.card.index)} alt={zoomed.card.name} />
-					<figcaption>
-						{cardDisplayName(zoomed)}{zoomed.reversed ? ' (reversed)' : ''} — {zoomed.position.name}
-					</figcaption>
-				</figure>
-				<div class="zoominfo" role="presentation" onclick={(e) => e.stopPropagation()}>
-					<CardDetail drawn={zoomed} {meta} renames={deckInfo} />
-				</div>
-				<button class="zoomclose" onclick={() => (zoomed = null)} aria-label="Close">✕</button>
-			</div>
-		</div>
+		<Lightbox deck={reading.deck} view={zoomed} {meta} renames={deckInfo} onclose={() => (zoomed = null)} />
 	{/if}
 {/if}
 
@@ -299,78 +284,6 @@
 
 	.error {
 		color: var(--danger);
-	}
-
-	.lightbox {
-		position: fixed;
-		inset: 0;
-		background: rgba(10, 8, 20, 0.88);
-		display: grid;
-		place-items: center;
-		z-index: 20;
-		cursor: zoom-out;
-		padding: 1.5rem;
-	}
-
-	.zoomview {
-		position: relative;
-		display: flex;
-		gap: 1.5rem;
-		align-items: flex-start;
-		max-width: min(64rem, 96vw);
-		max-height: 90dvh;
-		cursor: default;
-	}
-
-	.zoomview figure {
-		margin: 0;
-		text-align: center;
-		flex: 0 0 auto;
-	}
-
-	.zoomview img {
-		max-height: 80dvh;
-		max-width: min(48vw, 26rem);
-		border-radius: 10px;
-	}
-
-	.zoomview figcaption {
-		margin-top: 0.6rem;
-		color: var(--gold-bright);
-	}
-
-	.zoominfo {
-		flex: 1 1 22rem;
-		max-width: 26rem;
-		max-height: 80dvh;
-		overflow-y: auto;
-	}
-
-	.zoominfo :global(.detail) {
-		margin: 0;
-	}
-
-	.zoomclose {
-		position: absolute;
-		top: -0.6rem;
-		right: -0.6rem;
-		border-radius: 999px;
-		width: 2rem;
-		height: 2rem;
-		padding: 0;
-		line-height: 1;
-	}
-
-	@media (max-width: 640px) {
-		.zoomview {
-			flex-direction: column;
-			align-items: center;
-			overflow-y: auto;
-		}
-		.zoomview img {
-			max-width: 80vw;
-			max-height: 55dvh;
-		}
 	}
 
 	@media (max-width: 640px) {

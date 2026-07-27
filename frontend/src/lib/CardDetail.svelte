@@ -1,16 +1,14 @@
 <script lang="ts">
-	import { deckCardName, type Card, type DeckRenames, type DrawnCard } from '$lib/api';
+	import { deckCardName, type Card, type CardView, type DeckRenames } from '$lib/api';
 
 	let {
 		drawn,
 		meta,
-		renames = undefined,
-		onZoom = null
+		renames = undefined
 	}: {
-		drawn: DrawnCard;
+		drawn: CardView;
 		meta: Card[];
 		renames?: DeckRenames;
-		onZoom?: (() => void) | null;
 	} = $props();
 
 	const card = $derived(meta.find((c) => c.index === drawn.card.index));
@@ -27,7 +25,9 @@
 		{#if display !== drawn.card.name}<span class="real">({drawn.card.name})</span>{/if}
 		{#if drawn.reversed}<span class="rev">reversed</span>{/if}
 	</h2>
-	<p class="dim">{drawn.position.name} — {drawn.position.meaning}</p>
+	{#if drawn.position}
+		<p class="dim">{drawn.position.name} — {drawn.position.meaning}</p>
+	{/if}
 	{#if keywords}
 		<p class="meaning">{keywords}</p>
 	{/if}
@@ -43,9 +43,6 @@
 				<p class="dim">Waite gives no reversed meaning for this card; upright: {card.pkt_upright}</p>
 			{/if}
 		</details>
-	{/if}
-	{#if onZoom}
-		<button class="zoom" onclick={onZoom}>⤢ View full art</button>
 	{/if}
 </aside>
 
@@ -97,11 +94,5 @@
 
 	.dim {
 		color: var(--text-dim);
-	}
-
-	.zoom {
-		margin-top: 0.8rem;
-		font-size: 0.85rem;
-		padding: 0.35rem 0.8rem;
 	}
 </style>

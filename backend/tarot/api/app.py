@@ -233,6 +233,16 @@ def unpublish_deck(slug: str, user: User):
     return _deck_view(deck, user)
 
 
+@app.delete("/api/decks/{slug}")
+def delete_deck(slug: str, user: User):
+    """Delete one of your private draft decks. Published decks must be
+    unpublished (back to a draft) first; builtin decks can't be deleted."""
+    if not decks_mod.delete_deck(user, slug):
+        raise HTTPException(404, f"you have no draft deck '{slug}' to delete")
+    dedupe.prune_orphans()  # drop object-store entries this deck was the last user of
+    return {"deleted": slug}
+
+
 DOWNLOAD_JOBS: dict[str, dict] = {}
 
 

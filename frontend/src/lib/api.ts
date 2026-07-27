@@ -60,6 +60,15 @@ export interface DrawnCard {
 	reversed: boolean;
 }
 
+/** What the lightbox/infobox need: a card reference, its orientation, and —
+ * when it was drawn into a spread — the position. DrawnCard satisfies this
+ * structurally; deck galleries synthesize one with no position. */
+export interface CardView {
+	card: { index: number; name: string };
+	reversed: boolean;
+	position?: SpreadPosition;
+}
+
 export interface Reading {
 	deck: string;
 	spread: string;
@@ -280,6 +289,7 @@ export const api = {
 		}),
 	publishDeck: (slug: string) => send<DeckSummary>('POST', `/api/decks/${slug}/publish`),
 	unpublishDeck: (slug: string) => send<DeckSummary>('POST', `/api/decks/${slug}/unpublish`),
+	deleteDeck: (slug: string) => send<{ deleted: string }>('DELETE', `/api/decks/${slug}`),
 	readings: () => get<SavedReading[]>('/api/readings'),
 	reading: (id: number) => get<SavedReading>(`/api/readings/${id}`),
 	createGuidedReading: (r: Reading & { mode: InterpretationMode; notes?: string }) =>

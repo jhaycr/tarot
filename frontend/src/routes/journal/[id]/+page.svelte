@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type SavedReading } from '$lib/api';
-	import CardDetail from '$lib/CardDetail.svelte';
+	import Lightbox from '$lib/Lightbox.svelte';
 	import VisibilitySelect from '$lib/VisibilitySelect.svelte';
 	import { toParagraphs } from '$lib/text';
 	import { prefJournalLayout } from '$lib/prefs.svelte';
@@ -15,7 +15,6 @@
 	let meta = $state<CardType[]>([]);
 	let notes = $state('');
 	let notesSaved = $state(true);
-	let selected = $state<number | null>(null);
 	let zoomed = $state<DrawnCard | null>(null);
 
 	$effect(() => {
@@ -75,8 +74,6 @@
 	}
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === 'Escape') zoomed = null; }} />
-
 {#if reading}
 	<header class="head">
 		<div>
@@ -125,8 +122,7 @@
 									<button
 										class="faceup"
 										class:cross={drawn.position.cross}
-										class:selected={selected === i}
-										onclick={() => (selected = selected === i ? null : i)}
+										onclick={() => (zoomed = drawn)}
 									>
 										<img
 											src={api.cardImage(viewDeck, drawn.card.index)}
@@ -148,11 +144,7 @@
 	{:else}
 		<div class="cards">
 			{#each reading.cards as drawn, i (i)}
-				<button
-					class="drawn"
-					class:selected={selected === i}
-					onclick={() => (selected = selected === i ? null : i)}
-				>
+				<button class="drawn" onclick={() => (zoomed = drawn)}>
 					<img
 						src={api.cardImage(viewDeck, drawn.card.index)}
 						alt={drawn.card.name}
@@ -164,11 +156,6 @@
 				</button>
 			{/each}
 		</div>
-	{/if}
-
-	{#if selected !== null}
-		{@const sel = reading.cards[selected]}
-		<CardDetail drawn={sel} {meta} renames={viewDeckInfo} onZoom={() => (zoomed = sel)} />
 	{/if}
 
 	{#if reading.interpretation?.mode}
@@ -218,14 +205,13 @@
 	{/if}
 
 	{#if zoomed}
-		<div class="lightbox" role="presentation" onclick={() => (zoomed = null)}>
-			<figure>
-				<img src={api.cardImage(viewDeck, zoomed.card.index)} alt={zoomed.card.name} />
-				<figcaption>
-					{zoomed.card.name}{zoomed.reversed ? ' (reversed)' : ''} — {zoomed.position.name}
-				</figcaption>
-			</figure>
-		</div>
+		<Lightbox
+			deck={viewDeck}
+			view={zoomed}
+			{meta}
+			renames={viewDeckInfo}
+			onclose={() => (zoomed = null)}
+		/>
 	{/if}
 {/if}
 
@@ -342,7 +328,7 @@
 		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 	}
 
-	.faceup.selected img {
+	.faceup:hover img {
 		border-color: var(--gold);
 	}
 
@@ -378,7 +364,7 @@
 		border: 1px solid var(--border);
 	}
 
-	.drawn.selected img {
+	.drawn:hover img {
 		border-color: var(--gold);
 	}
 
@@ -431,32 +417,6 @@
 
 	.notes textarea {
 		width: 100%;
-	}
-
-	.lightbox {
-		position: fixed;
-		inset: 0;
-		background: rgba(10, 8, 20, 0.88);
-		display: grid;
-		place-items: center;
-		z-index: 20;
-		cursor: zoom-out;
-	}
-
-	.lightbox figure {
-		margin: 0;
-		text-align: center;
-	}
-
-	.lightbox img {
-		max-height: 84dvh;
-		max-width: 92vw;
-		border-radius: 10px;
-	}
-
-	.lightbox figcaption {
-		margin-top: 0.6rem;
-		color: var(--gold-bright);
 	}
 
 	.dim {
