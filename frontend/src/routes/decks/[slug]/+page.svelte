@@ -101,8 +101,8 @@
 		if (deck?.has_back)
 			secs.push({
 				id: 'back',
-				title: 'Card back',
-				cards: [{ index: -1, name: 'Card back', canonical: 'Card back', numeral: '' }]
+				title: 'Back',
+				cards: [{ index: -1, name: 'Back', canonical: 'Back', numeral: '' }]
 			});
 		return secs;
 	});
