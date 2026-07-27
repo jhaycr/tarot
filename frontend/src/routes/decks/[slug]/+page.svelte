@@ -97,8 +97,19 @@
 					numeral: `+${i + 1}`
 				}))
 			});
+		// index -1 = the deck's back image (served from its own endpoint)
+		if (deck?.has_back)
+			secs.push({
+				id: 'back',
+				title: 'Card back',
+				cards: [{ index: -1, name: 'Card back', canonical: 'Card back', numeral: '' }]
+			});
 		return secs;
 	});
+
+	function tileSrc(index: number): string {
+		return index === -1 ? api.backImage(slug) : api.cardImage(slug, index);
+	}
 
 	const flatCards = $derived(sections.flatMap((s) => s.cards));
 
@@ -162,7 +173,7 @@
 		<div class="grid" style={tileRatio ? `--tile-ratio: ${tileRatio}` : ''}>
 			{#each sec.cards as card (card.index)}
 				<button class="tile" onclick={() => (zoomed = card)}>
-					<img use:measure src={api.cardImage(slug, card.index)} alt={card.name} loading="lazy" />
+					<img use:measure src={tileSrc(card.index)} alt={card.name} loading="lazy" />
 					<small>
 						{#if card.numeral}<span class="num">{card.numeral}</span>{/if}
 						{card.name}
@@ -180,6 +191,7 @@
 			view={{ card: { index: zoomed.index, name: zoomed.canonical }, reversed: false }}
 			meta={cards}
 			renames={deck}
+			src={zoomed.index === -1 ? api.backImage(slug) : undefined}
 			onclose={() => (zoomed = null)}
 			onnav={nav}
 		/>

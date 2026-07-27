@@ -8,7 +8,8 @@
 		meta,
 		renames = undefined,
 		onclose,
-		onnav = undefined
+		onnav = undefined,
+		src = undefined
 	}: {
 		/** Deck slug the art is resolved against. */
 		deck: string;
@@ -18,6 +19,8 @@
 		onclose: () => void;
 		/** Arrow-key navigation: called with -1/+1 to move to the prev/next card. */
 		onnav?: (dir: -1 | 1) => void;
+		/** Art URL override for non-card images (e.g. the deck's back). */
+		src?: string;
 	} = $props();
 
 	// Visual orientation only: starts as drawn, and the flip button turns the
@@ -41,7 +44,7 @@
 		<figure role="presentation" onclick={(e) => e.stopPropagation()}>
 			<img
 				class:reversed={showReversed}
-				src={api.cardImage(deck, view.card.index)}
+				src={src ?? api.cardImage(deck, view.card.index)}
 				alt={view.card.name}
 			/>
 			<figcaption>
