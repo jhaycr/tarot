@@ -376,8 +376,26 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
         extras_dir.mkdir()
         for entry in extra_entries:
             (extras_dir / os.path.basename(entry)).write_bytes(zf.read(entry))
+    # A manifest.yaml bundled in the zip (e.g. from deck export) round-trips its
+    # descriptive keys. Ownership/publication state never imports, and `back` is
+    # re-detected from the renamed back.<ext> file.
+    manifest: dict = {}
+    manifest_entry = next((e for e in zf.namelist() if os.path.basename(e) == "manifest.yaml"), None)
+    if manifest_entry:
+        try:
+            uploaded_manifest = yaml.safe_load(zf.read(manifest_entry)) or {}
+        except yaml.YAMLError:
+            uploaded_manifest = {}
+        if isinstance(uploaded_manifest, dict):
+            manifest = {
+                k: uploaded_manifest[k]
+                for k in ("source", "attribution", "license", "suits", "majors", "extras")
+                if uploaded_manifest.get(k)
+            }
+    manifest["name"] = name
+    manifest.setdefault("attribution", f"Uploaded by {user}")
     (dest / "manifest.yaml").write_text(
-        yaml.safe_dump({"name": name, "attribution": f"Uploaded by {user}"}, sort_keys=False, allow_unicode=True)
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True)
     )
     dedupe.dedupe_deck(dest)
     return {

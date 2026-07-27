@@ -7,7 +7,8 @@
 		view,
 		meta,
 		renames = undefined,
-		onclose
+		onclose,
+		onnav = undefined
 	}: {
 		/** Deck slug the art is resolved against. */
 		deck: string;
@@ -15,6 +16,8 @@
 		meta: Card[];
 		renames?: DeckRenames;
 		onclose: () => void;
+		/** Arrow-key navigation: called with -1/+1 to move to the prev/next card. */
+		onnav?: (dir: -1 | 1) => void;
 	} = $props();
 
 	// Visual orientation only: starts as drawn, and the flip button turns the
@@ -25,7 +28,13 @@
 	const display = $derived(deckCardName(view.card.name, renames));
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === 'Escape') onclose(); }} />
+<svelte:window
+	onkeydown={(e) => {
+		if (e.key === 'Escape') onclose();
+		else if (e.key === 'ArrowLeft') onnav?.(-1);
+		else if (e.key === 'ArrowRight') onnav?.(1);
+	}}
+/>
 
 <div class="lightbox" role="presentation" onclick={onclose}>
 	<div class="zoomview">

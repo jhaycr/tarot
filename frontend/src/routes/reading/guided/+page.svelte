@@ -37,7 +37,8 @@
 	let comprehensive = $state('');
 	let flipped = $state<boolean[]>([]);
 	let streaming = $state<number | 'comprehensive' | null>(null);
-	let zoomed = $state<DrawnCard | null>(null);
+	let zoomedIdx = $state<number | null>(null);
+	const zoomed = $derived(zoomedIdx !== null && reading ? reading.cards[zoomedIdx] : null);
 	let meta = $state<CardType[]>([]);
 	let ctrl: AbortController | null = null;
 
@@ -158,6 +159,17 @@
 		streamFocused(i);
 	}
 
+	function nav(dir: -1 | 1) {
+		// arrow keys browse the revealed cards only
+		if (zoomedIdx === null || !reading) return;
+		const n = reading.cards.length;
+		let j = zoomedIdx;
+		do {
+			j = (j + dir + n) % n;
+		} while (!flipped[j] && j !== zoomedIdx);
+		zoomedIdx = j;
+	}
+
 	let discarding = $state(false);
 	async function discard() {
 		if (!reading || discarding) return;
@@ -206,7 +218,7 @@
 					<div
 						class="cardcol"
 						role="presentation"
-						onclick={() => { if (flipped[i]) zoomed = drawn; }}
+						onclick={() => { if (flipped[i]) zoomedIdx = i; }}
 					>
 						<Card
 							{drawn}
@@ -222,7 +234,7 @@
 					<div class="reading">
 						{#if flipped[i]}
 							<h3>
-								<button class="namelink" onclick={() => (zoomed = drawn)}>
+								<button class="namelink" onclick={() => (zoomedIdx = i)}>
 									{cardName(drawn)}{drawn.reversed ? ' (reversed)' : ''}
 								</button>
 							</h3>
@@ -264,13 +276,16 @@
 	</section>
 
 	{#if zoomed}
-		<Lightbox
-			deck={reading.deck}
-			view={zoomed}
-			{meta}
-			renames={deckInfo ?? undefined}
-			onclose={() => (zoomed = null)}
-		/>
+		{#key zoomedIdx}
+			<Lightbox
+				deck={reading.deck}
+				view={zoomed}
+				{meta}
+				renames={deckInfo ?? undefined}
+				onclose={() => (zoomedIdx = null)}
+				onnav={nav}
+			/>
+		{/key}
 	{/if}
 {/if}
 

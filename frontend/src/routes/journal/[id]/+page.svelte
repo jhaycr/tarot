@@ -15,7 +15,14 @@
 	let meta = $state<CardType[]>([]);
 	let notes = $state('');
 	let notesSaved = $state(true);
-	let zoomed = $state<DrawnCard | null>(null);
+	let zoomedIdx = $state<number | null>(null);
+	const zoomed = $derived(zoomedIdx !== null && reading ? reading.cards[zoomedIdx] : null);
+
+	function nav(dir: -1 | 1) {
+		if (zoomedIdx === null || !reading) return;
+		const n = reading.cards.length;
+		zoomedIdx = (zoomedIdx + dir + n) % n;
+	}
 
 	$effect(() => {
 		api.reading(id)
@@ -122,7 +129,7 @@
 									<button
 										class="faceup"
 										class:cross={drawn.position.cross}
-										onclick={() => (zoomed = drawn)}
+										onclick={() => (zoomedIdx = i)}
 									>
 										<img
 											src={api.cardImage(viewDeck, drawn.card.index)}
@@ -144,7 +151,7 @@
 	{:else}
 		<div class="cards">
 			{#each reading.cards as drawn, i (i)}
-				<button class="drawn" onclick={() => (zoomed = drawn)}>
+				<button class="drawn" onclick={() => (zoomedIdx = i)}>
 					<img
 						src={api.cardImage(viewDeck, drawn.card.index)}
 						alt={drawn.card.name}
@@ -205,13 +212,16 @@
 	{/if}
 
 	{#if zoomed}
-		<Lightbox
-			deck={viewDeck}
-			view={zoomed}
-			{meta}
-			renames={viewDeckInfo}
-			onclose={() => (zoomed = null)}
-		/>
+		{#key zoomedIdx}
+			<Lightbox
+				deck={viewDeck}
+				view={zoomed}
+				{meta}
+				renames={viewDeckInfo}
+				onclose={() => (zoomedIdx = null)}
+				onnav={nav}
+			/>
+		{/key}
 	{/if}
 {/if}
 

@@ -99,6 +99,15 @@
 			});
 		return secs;
 	});
+
+	const flatCards = $derived(sections.flatMap((s) => s.cards));
+
+	function nav(dir: -1 | 1) {
+		if (!zoomed || !flatCards.length) return;
+		const pos = flatCards.findIndex((c) => c.index === zoomed!.index);
+		if (pos === -1) return;
+		zoomed = flatCards[(pos + dir + flatCards.length) % flatCards.length];
+	}
 </script>
 
 <header class="top">
@@ -151,13 +160,16 @@
 {/each}
 
 {#if zoomed}
-	<Lightbox
-		deck={slug}
-		view={{ card: { index: zoomed.index, name: zoomed.canonical }, reversed: false }}
-		meta={cards}
-		renames={deck}
-		onclose={() => (zoomed = null)}
-	/>
+	{#key zoomed.index}
+		<Lightbox
+			deck={slug}
+			view={{ card: { index: zoomed.index, name: zoomed.canonical }, reversed: false }}
+			meta={cards}
+			renames={deck}
+			onclose={() => (zoomed = null)}
+			onnav={nav}
+		/>
+	{/key}
 {/if}
 
 <style>

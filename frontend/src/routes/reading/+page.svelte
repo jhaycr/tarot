@@ -11,7 +11,8 @@
 	let decks = $state<DeckSummary[]>([]);
 	let meta = $state<CardType[]>([]);
 	let flips = $state<boolean[]>(reading ? reading.cards.map(() => false) : []);
-	let zoomed = $state<DrawnCard | null>(null);
+	let zoomedIdx = $state<number | null>(null);
+	const zoomed = $derived(zoomedIdx !== null && reading ? reading.cards[zoomedIdx] : null);
 	let savedId = $state<number | null>(null);
 	let saving = $state(false);
 	let llmEnabled = $state(false);
@@ -63,7 +64,18 @@
 
 	function slotClick(i: number) {
 		if (!flips[i] || !reading) return;
-		zoomed = reading.cards[i]; // face-up card click -> full-size art
+		zoomedIdx = i; // face-up card click -> full-size art
+	}
+
+	function nav(dir: -1 | 1) {
+		// arrow keys browse the revealed cards only
+		if (zoomedIdx === null || !reading) return;
+		const n = reading.cards.length;
+		let j = zoomedIdx;
+		do {
+			j = (j + dir + n) % n;
+		} while (!flips[j] && j !== zoomedIdx);
+		zoomedIdx = j;
 	}
 
 	function revealAll() {
@@ -180,7 +192,16 @@
 	</section>
 
 	{#if zoomed}
-		<Lightbox deck={reading.deck} view={zoomed} {meta} renames={deckInfo} onclose={() => (zoomed = null)} />
+		{#key zoomedIdx}
+			<Lightbox
+				deck={reading.deck}
+				view={zoomed}
+				{meta}
+				renames={deckInfo}
+				onclose={() => (zoomedIdx = null)}
+				onnav={nav}
+			/>
+		{/key}
 	{/if}
 {/if}
 
