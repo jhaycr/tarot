@@ -102,6 +102,20 @@
 
 	const flatCards = $derived(sections.flatMap((s) => s.cards));
 
+	// Decks vary in native card proportions (Marseille and game decks run taller
+	// than RWS). Size the gallery tiles to this deck's own ratio — measured from
+	// the first card image that loads — so frames aren't cropped; object-fit:
+	// contain guards any outlier cards. Tiles stay uniform within the deck.
+	let tileRatio = $state<number | null>(null);
+	function measure(img: HTMLImageElement) {
+		const set = () => {
+			if (tileRatio === null && img.naturalWidth && img.naturalHeight)
+				tileRatio = img.naturalWidth / img.naturalHeight;
+		};
+		if (img.complete) set();
+		else img.addEventListener('load', set, { once: true });
+	}
+
 	function nav(dir: -1 | 1) {
 		if (!zoomed || !flatCards.length) return;
 		const pos = flatCards.findIndex((c) => c.index === zoomed!.index);
@@ -145,10 +159,10 @@
 {#each sections as sec (sec.id)}
 	<section id={sec.id}>
 		<h2>{sec.title} <small class="dim">{sec.cards.length}</small></h2>
-		<div class="grid">
+		<div class="grid" style={tileRatio ? `--tile-ratio: ${tileRatio}` : ''}>
 			{#each sec.cards as card (card.index)}
 				<button class="tile" onclick={() => (zoomed = card)}>
-					<img src={api.cardImage(slug, card.index)} alt={card.name} loading="lazy" />
+					<img use:measure src={api.cardImage(slug, card.index)} alt={card.name} loading="lazy" />
 					<small>
 						{#if card.numeral}<span class="num">{card.numeral}</span>{/if}
 						{card.name}
@@ -259,8 +273,9 @@
 
 	.tile img {
 		width: 100%;
-		aspect-ratio: var(--card-ratio);
-		object-fit: cover;
+		aspect-ratio: var(--tile-ratio, var(--card-ratio));
+		object-fit: contain;
+		background: var(--bg-raised);
 		border-radius: 6px;
 		border: 1px solid var(--border);
 	}
