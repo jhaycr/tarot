@@ -7,6 +7,7 @@ Recognized styles (mixable within one deck):
   nonstandard suit order land correctly
 - commons: Wands01.jpg … Wands14.jpg, Coins07.jpg, RWS_Tarot_08_Strength.jpg
 - back:    any file whose name contains 'back' or 'reverse'
+- cover:   any file whose name contains 'cover', 'box', or 'lid'
 
 Suit synonyms (batons/staves→wands, chalices→cups, discs/coins→pentacles) and
 court synonyms (knave/princess→page, prince→knight) are folded in.
@@ -64,14 +65,16 @@ def _tokens(stem: str) -> list[str]:
 
 
 def classify(stem: str) -> int | str | None:
-    """Canonical index, 'back', or None if unrecognized."""
+    """Canonical index, 'back', 'cover', or None if unrecognized."""
     tokens = _tokens(stem)
     alpha = [t for t in tokens if t.isalpha() and t not in NOISE_TOKENS]
     digits = [t for t in tokens if t.isdigit()]
 
     if any(t in ("back", "reverse", "reverso") for t in alpha):
         return "back"
-    if any(t in ("box", "cover", "title", "lid") for t in alpha):
+    if any(t in ("box", "cover", "lid") for t in alpha):
+        return "cover"
+    if any(t == "title" for t in alpha):
         return "ignore"
 
     # minors: suit + (named rank | numeric rank)
@@ -101,10 +104,11 @@ def classify(stem: str) -> int | str | None:
     return None
 
 
-def map_filenames(stems: list[str]) -> tuple[dict[int, str], str | None, list[str]]:
-    """Returns (index->stem, back stem or None, unrecognized/conflicting stems)."""
+def map_filenames(stems: list[str]) -> tuple[dict[int, str], str | None, str | None, list[str]]:
+    """Returns (index->stem, back stem, cover stem, unrecognized/conflicting stems)."""
     mapping: dict[int, str] = {}
     back: str | None = None
+    cover: str | None = None
     problems: list[str] = []
     numeric: dict[str, int] = {}
     for stem in stems:
@@ -116,6 +120,8 @@ def map_filenames(stems: list[str]) -> tuple[dict[int, str], str | None, list[st
         kind = classify(stem)
         if kind == "back":
             back = back or stem
+        elif kind == "cover":
+            cover = cover or stem
         elif kind == "ignore":
             continue
         elif isinstance(kind, int):
@@ -130,4 +136,4 @@ def map_filenames(stems: list[str]) -> tuple[dict[int, str], str | None, list[st
     if 0 not in mapping and len(numeric) >= 22 and min(numeric.values()) == 1 and max(numeric.values()) <= 79:
         mapping = {n - 1: stem for stem, n in numeric.items() if 0 <= n - 1 <= 77}
         problems = [f"{stem}: number {n} out of range" for stem, n in numeric.items() if n - 1 > 77]
-    return mapping, back, problems
+    return mapping, back, cover, problems

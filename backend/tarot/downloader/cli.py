@@ -164,7 +164,7 @@ def import_dir(
     for f in sorted(src.iterdir()):
         if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
             files.setdefault(f.stem, f)
-    mapping, back_stem, problems = map_filenames(list(files))
+    mapping, back_stem, cover_stem, problems = map_filenames(list(files))
     for p in problems:
         print(f"  ! {p}", file=sys.stderr)
     if len(mapping) < 22:
@@ -187,6 +187,9 @@ def import_dir(
     if back_stem:
         f = files[back_stem]
         (deck_dir / f"back{f.suffix.lower()}").write_bytes(f.read_bytes())
+    if cover_stem:
+        f = files[cover_stem]
+        (deck_dir / f"cover{f.suffix.lower()}").write_bytes(f.read_bytes())
     src_extras = src / "extras"
     if src_extras.is_dir():
         (deck_dir / "extras").mkdir(exist_ok=True)
@@ -202,7 +205,11 @@ def import_dir(
         yaml.safe_dump({"name": name, "attribution": f"Imported from {src}"}, sort_keys=False, allow_unicode=True)
     )
     kind = "majors only" if len(mapping) == 22 and all(i < 22 for i in mapping) else f"{len(mapping)}/78"
-    print(f"imported {name} ({slug}): {kind}" + (", with back" if back_stem else ""))
+    print(
+        f"imported {name} ({slug}): {kind}"
+        + (", with back" if back_stem else "")
+        + (", with cover" if cover_stem else "")
+    )
     return deck_dir
 
 

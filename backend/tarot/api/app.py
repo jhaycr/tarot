@@ -145,6 +145,7 @@ def list_decks(user: User):
             "major_names": d.major_names,
             "missing": [] if d.complete else sorted(set(range(78)) - set(d.cards)),
             "has_back": d.back is not None,
+            "has_cover": d.cover is not None,
             "owner": d.owner,
             "tier": d.tier,
             "published": d.tier == decks_mod.LIBRARY,
@@ -174,9 +175,17 @@ def back_image(slug: str, user: User):
     return FileResponse(deck.back, headers=IMAGE_CACHE)
 
 
+@app.get("/api/decks/{slug}/cover")
+def cover_image(slug: str, user: User):
+    deck = get_deck_or_404(slug, user)
+    if not deck.cover:
+        raise HTTPException(404, f"deck '{slug}' has no cover image")
+    return FileResponse(deck.cover, headers=IMAGE_CACHE)
+
+
 @app.get("/api/decks/{slug}/export")
 def export_deck(slug: str, user: User):
-    """Zip a deck back up (numbered card files + back + manifest) for download."""
+    """Zip a deck back up (numbered card files + back/cover + manifest)."""
     deck = get_deck_or_404(slug, user)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:  # images don't recompress
@@ -184,6 +193,8 @@ def export_deck(slug: str, user: User):
             z.write(path, f"cards/{index:02d}{path.suffix.lower()}")
         if deck.back:
             z.write(deck.back, f"back{deck.back.suffix.lower()}")
+        if deck.cover:
+            z.write(deck.cover, f"cover{deck.cover.suffix.lower()}")
         manifest = deck.path / "manifest.yaml"
         if manifest.is_file():
             z.write(manifest, "manifest.yaml")
@@ -349,7 +360,7 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
         else:
             entries.setdefault(stem, entry)
 
-    mapping, back_stem, problems = importer.map_filenames(list(entries))
+    mapping, back_stem, cover_stem, problems = importer.map_filenames(list(entries))
     complete = len(mapping) == 78 or (len(mapping) == 22 and all(i < 22 for i in mapping))
     if not mapping and len(entries) in (78, 22):
         # unrecognizable names but the right count: assign in alphabetical order
@@ -371,14 +382,18 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
         entry = entries[back_stem]
         ext = os.path.splitext(entry)[1].lower()
         (dest / f"back{ext}").write_bytes(zf.read(entry))
+    if cover_stem:
+        entry = entries[cover_stem]
+        ext = os.path.splitext(entry)[1].lower()
+        (dest / f"cover{ext}").write_bytes(zf.read(entry))
     if extra_entries:
         extras_dir = dest / "extras"
         extras_dir.mkdir()
         for entry in extra_entries:
             (extras_dir / os.path.basename(entry)).write_bytes(zf.read(entry))
     # A manifest.yaml bundled in the zip (e.g. from deck export) round-trips its
-    # descriptive keys. Ownership/publication state never imports, and `back` is
-    # re-detected from the renamed back.<ext> file.
+    # descriptive keys. Ownership/publication state never imports; `back` and
+    # `cover` are re-detected from the renamed back/cover.<ext> files.
     manifest: dict = {}
     manifest_entry = next((e for e in zf.namelist() if os.path.basename(e) == "manifest.yaml"), None)
     if manifest_entry:

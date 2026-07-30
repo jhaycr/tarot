@@ -31,6 +31,7 @@ export interface DeckSummary {
 	major_names: Record<string, string>;
 	missing: number[];
 	has_back: boolean;
+	has_cover: boolean;
 	owner: string | null;
 	tier: 'builtin' | 'library' | 'staging';
 	published: boolean;
@@ -307,7 +308,8 @@ export const api = {
 		send<SavedReading>('PUT', `/api/readings/${id}/sharing`, { visibility, grantees }),
 	deleteReading: (id: number) => send<{ deleted: number }>('DELETE', `/api/readings/${id}`),
 	cardImage: (deck: string, index: number) => `/api/decks/${deck}/cards/${index}`,
-	backImage: (deck: string) => `/api/decks/${deck}/back`
+	backImage: (deck: string) => `/api/decks/${deck}/back`,
+	coverImage: (deck: string) => `/api/decks/${deck}/cover`
 };
 
 let cardsCache: Card[] | null = null;

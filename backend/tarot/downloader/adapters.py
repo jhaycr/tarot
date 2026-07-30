@@ -284,7 +284,7 @@ class FandomWiki(Adapter):
         if not by_stem:
             raise RuntimeError(f"no images found on {title}")
 
-        mapping, back_stem, problems = map_filenames(list(by_stem))
+        mapping, back_stem, _cover_stem, problems = map_filenames(list(by_stem))
         for p in problems:
             print(f"  ! {p}", file=sys.stderr)
         if not mapping:
@@ -341,7 +341,7 @@ class Wayback(Adapter):
         if not by_stem:
             raise RuntimeError("no image links found in the snapshot")
 
-        mapping, back_stem, problems = map_filenames(list(by_stem))
+        mapping, back_stem, _cover_stem, problems = map_filenames(list(by_stem))
         for p in problems:
             print(f"  ! {p}", file=sys.stderr)
         if not mapping:

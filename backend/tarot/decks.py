@@ -73,6 +73,7 @@ class Deck:
     # addressed as index 78+position: [(index, display name, path), ...]
     extras: list[tuple[int, str, Path]] = field(default_factory=list)
     back: Path | None = None
+    cover: Path | None = None  # box/cover art, shown in the gallery but never drawn
 
     @property
     def complete(self) -> bool:
@@ -136,14 +137,15 @@ def _load_deck(deck_path: Path, owner: str | None = None, tier: str = STAGING) -
             (78 + i, names.get(f.stem) or f.stem.replace("-", " ").replace("_", " ").title(), f)
             for i, f in enumerate(files)
         ]
-    back_name = manifest.get("back")
-    if back_name and (deck_path / back_name).is_file():
-        deck.back = deck_path / back_name
-    else:
+    for attr in ("back", "cover"):
+        named = manifest.get(attr)
+        if named and (deck_path / named).is_file():
+            setattr(deck, attr, deck_path / named)
+            continue
         for ext in IMAGE_EXTS:
-            candidate = deck_path / f"back{ext}"
+            candidate = deck_path / f"{attr}{ext}"
             if candidate.is_file():
-                deck.back = candidate
+                setattr(deck, attr, candidate)
                 break
     return deck
 

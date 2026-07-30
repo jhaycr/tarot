@@ -8,6 +8,7 @@ A deck is a folder:
 decks/<slug>/
 ├── manifest.yaml       # metadata (below)
 ├── back.jpg            # optional card-back image (any IMAGE_EXT)
+├── cover.jpg           # optional box/cover art (any IMAGE_EXT)
 ├── cards/
 │   ├── 00.jpg          # canonical index, zero-padded, any of .jpg .jpeg .png .webp .gif
 │   └── … 77.jpg
@@ -33,6 +34,7 @@ source: https://…               # where it came from (optional)
 attribution: …                  # credit line (optional)
 license: …                      # e.g. "Public domain" (optional)
 back: back.jpg                  # card back override (optional; back.* is found automatically)
+cover: cover.jpg                # box/cover art override (optional; cover.* is found automatically)
 shared: true                    # user decks only: visible to everyone on the instance
 suits:                          # optional deck-specific suit names, shown with the
   Wands: Vitality               # canonical name as a parenthetical, e.g. "Vitality (Wands)"
@@ -121,7 +123,8 @@ of these styles (`tarot-dl <folder>` imports use the same rules):
 
 - Suit synonyms: batons/staves/rods→wands, chalices→cups, discs/coins/deniers→pentacles
 - Court synonyms: knave/princess/valet→page, prince/cavalier→knight
-- `back.*`/`*reverse*` becomes the card back; `*box*`/`*cover*` files are ignored
+- `back.*`/`*reverse*` becomes the card back; `*box*`/`*cover*`/`*lid*` becomes
+  the cover; `*title*` files are ignored
 - 78 recognized images → full deck; exactly the 22 majors → majors-only; partial
   decks are accepted when every file is recognized
 - If nothing is recognizable but the zip holds exactly 78 (or 22) images, they're

@@ -97,7 +97,13 @@
 					numeral: `+${i + 1}`
 				}))
 			});
-		// index -1 = the deck's back image (served from its own endpoint)
+		// indexes -1/-2 = the deck's back/cover images (each has its own endpoint)
+		if (deck?.has_cover)
+			secs.push({
+				id: 'cover',
+				title: 'Cover',
+				cards: [{ index: -2, name: 'Cover', canonical: 'Cover', numeral: '' }]
+			});
 		if (deck?.has_back)
 			secs.push({
 				id: 'back',
@@ -108,7 +114,9 @@
 	});
 
 	function tileSrc(index: number): string {
-		return index === -1 ? api.backImage(slug) : api.cardImage(slug, index);
+		if (index === -1) return api.backImage(slug);
+		if (index === -2) return api.coverImage(slug);
+		return api.cardImage(slug, index);
 	}
 
 	const flatCards = $derived(sections.flatMap((s) => s.cards));
@@ -191,7 +199,7 @@
 			view={{ card: { index: zoomed.index, name: zoomed.canonical }, reversed: false }}
 			meta={cards}
 			renames={deck}
-			src={zoomed.index === -1 ? api.backImage(slug) : undefined}
+			src={zoomed.index < 0 ? tileSrc(zoomed.index) : undefined}
 			onclose={() => (zoomed = null)}
 			onnav={nav}
 		/>
