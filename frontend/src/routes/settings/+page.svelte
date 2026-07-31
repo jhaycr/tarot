@@ -1,10 +1,13 @@
 <script lang="ts">
-	import { api } from '$lib/api';
+	import { api, type VoiceBlock } from '$lib/api';
 
 	let prompt = $state('');
 	let personas = $state<Record<string, string>>({});
 	let saved = $state(true);
 	let expanded = $state<string | null>(null);
+	let customVoice = $state('');
+	let customSpeed = $state('');
+	let customInstructions = $state('');
 
 	let isAdmin = $state(false);
 	let llmBaseUrl = $state('');
@@ -22,17 +25,34 @@
 	let reversalSaved = $state(true);
 	let reversalManaged = $state(false);
 
+	let ttsEnabled = $state(false);
+	let ttsBaseUrl = $state('');
+	let ttsModel = $state('');
+	let ttsApiKey = $state('');
+	let ttsKeySet = $state(false);
+	let ttsSaved = $state(true);
+	let ttsError = $state('');
+	let ttsManaged = $state<string[]>([]);
+	// editable copies of the alice/selene voice blocks
+	let voices = $state<Record<string, { voice: string; speed: number; instructions: string }>>({});
+
 	const managed = (f: string) => llmManaged.includes(f);
+	const tmanaged = (f: string) => ttsManaged.includes(f);
 
 	$effect(() => {
 		api.getPrompt().then((r) => {
 			prompt = r.prompt;
 			personas = r.personas;
+			customVoice = r.voice?.voice ?? '';
+			customSpeed = r.voice?.speed != null ? String(r.voice.speed) : '';
+			customInstructions = r.voice?.instructions ?? '';
 		});
 		api.me().then((m) => {
 			isAdmin = m.is_admin;
+			ttsEnabled = m.tts;
 			if (m.is_admin) {
 				refreshLlm();
+				refreshTts();
 				api.getReadingSettings().then((s) => {
 					reversalChance = s.reversal_chance;
 					reversalManaged = s.managed.includes('reversal_chance');
@@ -40,6 +60,45 @@
 			}
 		});
 	});
+
+	async function refreshTts() {
+		const s = await api.getTtsSettings();
+		ttsBaseUrl = s.base_url;
+		ttsModel = s.model;
+		ttsKeySet = s.api_key_set;
+		ttsManaged = s.managed;
+		voices = Object.fromEntries(
+			Object.entries(s.voices).map(([p, v]) => [
+				p,
+				{ voice: v.voice ?? '', speed: v.speed ?? 1, instructions: v.instructions ?? '' }
+			])
+		);
+		configFile = s.config_file;
+		configError = configError || s.config_error;
+	}
+
+	async function saveTts() {
+		ttsError = '';
+		try {
+			const editable = Object.entries(voices).filter(([p]) => !tmanaged(`voice_${p}`));
+			await api.setTtsSettings({
+				...(tmanaged('base_url') ? {} : { base_url: ttsBaseUrl }),
+				...(tmanaged('model') ? {} : { model: ttsModel }),
+				...(ttsApiKey && !tmanaged('api_key') ? { api_key: ttsApiKey } : {}),
+				voices: Object.fromEntries(
+					editable.map(([p, v]) => [
+						p,
+						{ voice: v.voice, speed: v.speed, instructions: v.instructions }
+					])
+				)
+			});
+			ttsApiKey = '';
+			await refreshTts();
+			ttsSaved = true;
+		} catch (e) {
+			ttsError = String(e);
+		}
+	}
 
 	async function saveReversal() {
 		const s = await api.setReadingSettings({ reversal_chance: reversalChance });
@@ -78,13 +137,19 @@
 	}
 
 	async function save() {
-		const r = await api.setPrompt(prompt);
+		const voice: VoiceBlock = {
+			...(customVoice.trim() ? { voice: customVoice.trim() } : {}),
+			...(customSpeed.trim() ? { speed: Number(customSpeed) } : {}),
+			...(customInstructions.trim() ? { instructions: customInstructions.trim() } : {})
+		};
+		const r = await api.setPrompt(prompt, Object.keys(voice).length ? voice : null);
 		prompt = r.prompt;
 		saved = true;
 	}
 
 	async function clear() {
 		prompt = '';
+		customVoice = customSpeed = customInstructions = '';
 		await save();
 	}
 </script>
@@ -160,6 +225,56 @@
 			<button onclick={saveLlm} disabled={llmSaved}>{llmSaved ? 'Saved' : 'Save connection'}</button>
 		{/if}
 	</section>
+
+	<section>
+		<h2>Voice (text-to-speech) <small class="dim">(admin)</small></h2>
+		<p class="dim">
+			Any OpenAI-compatible <code>/audio/speech</code> endpoint. OpenAI:
+			<code>https://api.openai.com/v1</code> with model <code>gpt-4o-mini-tts</code>
+			(supports style instructions); self-hosted Kokoro (kokoro-fastapi):
+			<code>http://kokoro:8880/v1</code> with model <code>kokoro</code> (pick a voice like
+			<code>af_heart</code>; instructions are ignored). Leave the Base URL empty to turn the
+			feature off — audio buttons only appear when it's configured.
+		</p>
+		<label class="fld">
+			<span>Base URL {#if tmanaged('base_url')}<em class="dim">(managed)</em>{/if}</span>
+			<input type="text" bind:value={ttsBaseUrl} oninput={() => (ttsSaved = false)} disabled={tmanaged('base_url')} placeholder="https://api.openai.com/v1" />
+		</label>
+		<label class="fld">
+			<span>Model {#if tmanaged('model')}<em class="dim">(managed)</em>{/if}</span>
+			<input type="text" bind:value={ttsModel} oninput={() => (ttsSaved = false)} disabled={tmanaged('model')} placeholder="gpt-4o-mini-tts" />
+		</label>
+		<label class="fld">
+			<span>API key
+				{#if tmanaged('api_key')}<em class="dim">(managed)</em>
+				{:else if ttsKeySet}<em class="dim">(saved — leave blank to keep)</em>{/if}</span>
+			<input type="password" bind:value={ttsApiKey} oninput={() => (ttsSaved = false)} disabled={tmanaged('api_key')} placeholder={ttsKeySet ? '••••••••' : 'sk-…'} autocomplete="off" />
+		</label>
+		{#each Object.entries(voices) as [p, v] (p)}
+			<fieldset class="voice">
+				<legend>{p} {#if tmanaged(`voice_${p}`)}<em class="dim">(managed)</em>{/if}</legend>
+				<div class="voicerow">
+					<label class="fld">
+						<span>Voice</span>
+						<input type="text" bind:value={v.voice} oninput={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)} />
+					</label>
+					<label class="fld">
+						<span>Speed</span>
+						<input type="number" min="0.25" max="4" step="0.05" bind:value={v.speed} oninput={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)} />
+					</label>
+				</div>
+				<label class="fld">
+					<span>Style instructions (OpenAI only)</span>
+					<textarea rows="2" bind:value={v.instructions} oninput={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)}></textarea>
+				</label>
+			</fieldset>
+		{/each}
+		{#if ttsManaged.length}
+			<p class="managed">Partly managed by <code>{configFile}</code> — edit the config file rather than this page.</p>
+		{/if}
+		{#if ttsError}<p class="error">{ttsError}</p>{/if}
+		<button onclick={saveTts} disabled={ttsSaved}>{ttsSaved ? 'Saved' : 'Save voice settings'}</button>
+	</section>
 {/if}
 
 <section>
@@ -175,6 +290,25 @@
 		oninput={() => (saved = false)}
 		placeholder="You are …, a tarot reader who …"
 	></textarea>
+	{#if ttsEnabled && prompt}
+		<div class="customvoice">
+			<p class="dim">Your persona's voice (optional — defaults to the instance default):</p>
+			<div class="voicerow">
+				<label class="fld">
+					<span>Voice</span>
+					<input type="text" bind:value={customVoice} oninput={() => (saved = false)} placeholder="e.g. onyx" />
+				</label>
+				<label class="fld">
+					<span>Speed</span>
+					<input type="text" inputmode="decimal" bind:value={customSpeed} oninput={() => (saved = false)} placeholder="1.0" />
+				</label>
+			</div>
+			<label class="fld">
+				<span>Style instructions (OpenAI only)</span>
+				<textarea rows="2" bind:value={customInstructions} oninput={() => (saved = false)} placeholder="How should your reader sound?"></textarea>
+			</label>
+		</div>
+	{/if}
 	<div class="row">
 		<button onclick={save} disabled={saved}>{saved ? 'Saved' : 'Save persona'}</button>
 		{#if prompt}
@@ -286,5 +420,35 @@
 		background: var(--bg-raised);
 		padding: 0.1rem 0.3rem;
 		border-radius: 4px;
+	}
+
+	.voice {
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.6rem 0.9rem;
+		margin-bottom: 0.8rem;
+	}
+
+	.voice legend {
+		text-transform: capitalize;
+		color: var(--gold);
+		padding: 0 0.4rem;
+	}
+
+	.voicerow {
+		display: flex;
+		gap: 0.8rem;
+	}
+
+	.voicerow .fld {
+		flex: 1;
+	}
+
+	.voicerow .fld:last-child {
+		max-width: 8rem;
+	}
+
+	.customvoice {
+		margin-top: 0.8rem;
 	}
 </style>

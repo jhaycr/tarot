@@ -21,6 +21,14 @@ additive.
       default_persona: alice
       system_prompt: |          # replaces the default persona's prompt
         ...
+    tts:
+      base_url: https://api.openai.com/v1
+      model: gpt-4o-mini-tts
+      api_key: "..."            # or api_key_env: TAROT_TTS_API_KEY
+      cache_max_mb: 256
+      voices:
+        alice:  {voice: coral, speed: 1.0, instructions: "..."}
+        selene: {voice: sage,  speed: 0.95, instructions: "..."}
 
 A malformed file is reported rather than fatal: the app keeps serving on the
 previous behaviour and surfaces the parse error through /api/settings/*, so a
@@ -107,12 +115,20 @@ def exists() -> bool:
     return config_path().is_file()
 
 
-def llm_api_key() -> str | None:
+def _section_api_key(section: str) -> str | None:
     """Inline value, or the named environment variable's value."""
-    inline = get("llm", "api_key")
+    inline = get(section, "api_key")
     if inline:
         return str(inline)
-    env_name = get("llm", "api_key_env")
+    env_name = get(section, "api_key_env")
     if env_name:
         return os.environ.get(str(env_name), "")
     return None
+
+
+def llm_api_key() -> str | None:
+    return _section_api_key("llm")
+
+
+def tts_api_key() -> str | None:
+    return _section_api_key("tts")

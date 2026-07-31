@@ -168,11 +168,28 @@ def _m4_guided_interpretations(con: sqlite3.Connection) -> None:
     )
 
 
+def _m5_tts(con: sqlite3.Connection) -> None:
+    """TTS audio cache index (LRU by last_used_at; files live in
+    /data/tts-cache) + a per-user voice block for the custom persona."""
+    con.execute(
+        """
+        CREATE TABLE tts_cache (
+            hash         TEXT PRIMARY KEY,
+            size_bytes   INTEGER NOT NULL,
+            created_at   INTEGER NOT NULL,
+            last_used_at INTEGER NOT NULL
+        )
+        """
+    )
+    con.execute("ALTER TABLE user_prompts ADD COLUMN voice TEXT")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m1_user_registry),
     (2, _m2_reading_visibility),
     (3, _m3_publish_decks),
     (4, _m4_guided_interpretations),
+    (5, _m5_tts),
 ]
 
 
@@ -421,6 +438,16 @@ def set_focused_interpretation(
             " text = excluded.text, persona = excluded.persona, updated_at = excluded.updated_at",
             (reading_id, position, text, persona, now, now),
         )
+        # A single-card reading has no comprehensive step (the one focused
+        # reading IS the whole picture), so it completes here.
+        cards = con.execute(
+            "SELECT cards FROM readings WHERE id = ?", (reading_id,)
+        ).fetchone()["cards"]
+        if len(json.loads(cards)) == 1:
+            con.execute(
+                "UPDATE readings SET interpretation_status = 'complete' WHERE id = ?",
+                (reading_id,),
+            )
         row = con.execute("SELECT * FROM readings WHERE id = ?", (reading_id,)).fetchone()
         return _reading_dict(con, row, full=True)
 
@@ -543,6 +570,83 @@ def set_user_prompt(owner: str, system_prompt: str) -> None:
             )
         else:
             con.execute("DELETE FROM user_prompts WHERE owner = ?", (owner,))
+
+
+def get_user_voice(owner: str) -> dict | None:
+    """The custom persona's voice block, or None. Lives on the user_prompts
+    row, so it exists only while a custom prompt does."""
+    with connect() as con:
+        row = con.execute(
+            "SELECT voice FROM user_prompts WHERE owner = ?", (owner,)
+        ).fetchone()
+        if not row or not row["voice"]:
+            return None
+        try:
+            parsed = json.loads(row["voice"])
+            return parsed if isinstance(parsed, dict) else None
+        except ValueError:
+            return None
+
+
+def set_user_voice(owner: str, voice: dict | None) -> None:
+    """Attach a voice block to the user's custom prompt row (no-op without one)."""
+    with connect() as con:
+        con.execute(
+            "UPDATE user_prompts SET voice = ? WHERE owner = ?",
+            (json.dumps(voice) if voice else None, owner),
+        )
+
+
+def get_interpretation(reading_id: int, position: int) -> dict | None:
+    """One interpretation row (text + persona). NOT visibility-gated — call
+    after get_reading() has already established the viewer may see it."""
+    with connect() as con:
+        row = con.execute(
+            "SELECT position, kind, text, persona FROM reading_interpretations"
+            " WHERE reading_id = ? AND position = ?",
+            (reading_id, position),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+# --- TTS cache index (LRU; files live in /data/tts-cache) -------------------
+
+def tts_cache_all() -> list[dict]:
+    """All entries, least-recently-played first (eviction order)."""
+    with connect() as con:
+        return [
+            dict(r)
+            for r in con.execute(
+                "SELECT hash, size_bytes, last_used_at FROM tts_cache ORDER BY last_used_at"
+            )
+        ]
+
+
+def tts_cache_upsert(hash_: str, size_bytes: int) -> None:
+    now = int(time.time())
+    with connect() as con:
+        con.execute(
+            "INSERT INTO tts_cache (hash, size_bytes, created_at, last_used_at)"
+            " VALUES (?,?,?,?)"
+            " ON CONFLICT(hash) DO UPDATE SET"
+            " size_bytes = excluded.size_bytes, last_used_at = excluded.last_used_at",
+            (hash_, size_bytes, now, now),
+        )
+
+
+def tts_cache_touch(hash_: str) -> None:
+    """Bump last_used_at, throttled to daily so replays don't churn writes."""
+    now = int(time.time())
+    with connect() as con:
+        con.execute(
+            "UPDATE tts_cache SET last_used_at = ? WHERE hash = ? AND last_used_at < ?",
+            (now, hash_, now - 86400),
+        )
+
+
+def tts_cache_delete(hash_: str) -> None:
+    with connect() as con:
+        con.execute("DELETE FROM tts_cache WHERE hash = ?", (hash_,))
 
 
 def get_setting(key: str) -> str:

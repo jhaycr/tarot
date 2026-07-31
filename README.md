@@ -86,6 +86,12 @@ docker run -p 8000:8000 -v ./data:/data tarotarium
   encrypted at rest), via env vars, or declaratively for config-managed
   instances; choose a reader persona per reading: Alice (secular,
   psychology-first), Selene (spiritualist), or your own custom system prompt
+- **Spoken readings** (optional) — interpretations read aloud in a voice that
+  matches the persona, via any OpenAI-compatible `/audio/speech` endpoint
+  (OpenAI `gpt-4o-mini-tts` with per-persona style instructions, or free
+  self-hosted [Kokoro](https://github.com/remsky/Kokoro-FastAPI)); play button
+  on every reading plus an auto-read mode; audio cached server-side under a
+  configurable disk budget
 - **PWA** — add to home screen, offline app shell, cached card images
 
 ## Configuration
@@ -97,13 +103,22 @@ docker run -p 8000:8000 -v ./data:/data tarotarium
 | `TAROT_LLM_BASE_URL` | OpenAI-compatible endpoint (e.g. `https://openrouter.ai/api/v1`); unset everywhere disables interpretation |
 | `TAROT_LLM_MODEL` / `TAROT_LLM_API_KEY` | model name (e.g. `minimax/minimax-m2`) / optional bearer token |
 | `TAROT_LLM_SYSTEM_PROMPT` | instance-wide default persona override |
+| `TAROT_TTS_BASE_URL` | OpenAI-compatible TTS endpoint (e.g. `https://api.openai.com/v1`, or a Kokoro container's `http://kokoro:8880/v1`); unset everywhere disables spoken readings |
+| `TAROT_TTS_MODEL` / `TAROT_TTS_API_KEY` | TTS model (default `gpt-4o-mini-tts`; Kokoro: `kokoro`) / optional bearer token |
 | `TAROT_ADMIN_USERS` | comma-separated users who may edit instance settings (default: the fallback user) |
 | `TAROT_SECRET_KEY` | Fernet key for credential encryption (default: auto-generated at `/data/.secret_key`) |
 
 For Ansible/GitOps-managed instances, `/data/config.yaml` sets the same knobs
-declaratively (LLM connection, reversal chance, default persona); file-managed
-fields show read-only in the Settings UI. Precedence: config file → admin
-Settings → env vars.
+declaratively (LLM + TTS connections, per-persona voices, reversal chance,
+default persona); file-managed fields show read-only in the Settings UI.
+Precedence: config file → admin Settings → env vars.
+
+Self-hosting the voice: run a
+[Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) container next to
+the app (`ghcr.io/remsky/kokoro-fastapi-cpu`, CPU is enough) and point the TTS
+base URL at it with model `kokoro` and a voice like `af_heart` — no API key or
+cloud account needed. Voice style instructions only apply on endpoints that
+support them (OpenAI).
 
 ## Decks
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import {
@@ -12,11 +12,12 @@
 		type Persona,
 		type SavedReading
 	} from '$lib/api';
+	import AudioButton from '$lib/AudioButton.svelte';
 	import Card from '$lib/Card.svelte';
 	import Lightbox from '$lib/Lightbox.svelte';
 	import { toParagraphs } from '$lib/text';
 	import { readingStore } from '$lib/reading.svelte';
-	import { prefPersona, prefGuidedMode } from '$lib/prefs.svelte';
+	import { prefAutoRead, prefGuidedMode, prefPersona } from '$lib/prefs.svelte';
 
 	// A guided reading is a persisted, resumable resource. We arrive either with a
 	// fresh draw in the store (create it), or with ?id to resume a saved one.
@@ -29,6 +30,7 @@
 	const deckInfo = $derived(decks.find((d) => d.slug === reading?.deck) ?? null);
 	let personas = $state<Persona[]>([]);
 	let persona = $state<string | null>(null);
+	let hasCustom = $state(false);
 	let error = $state('');
 
 	// Per-card focused text + the comprehensive, streamed live and seeded from
@@ -41,6 +43,12 @@
 	const zoomed = $derived(zoomedIdx !== null && reading ? reading.cards[zoomedIdx] : null);
 	let meta = $state<CardType[]>([]);
 	let ctrl: AbortController | null = null;
+
+	let ttsEnabled = $state(false);
+	// bind:this refs so auto-read can start a piece the moment it finishes streaming
+	let audioBtns = $state<(ReturnType<typeof AudioButton> | undefined)[]>([]);
+	let compBtn = $state<ReturnType<typeof AudioButton> | undefined>(undefined);
+	const autoRead = $derived(prefAutoRead.value === 'true');
 
 	const cards = $derived(reading?.cards ?? []);
 	const allRevealed = $derived(cards.length > 0 && flipped.every(Boolean));
@@ -57,8 +65,12 @@
 	async function init() {
 		try {
 			api.decks().then((d) => (decks = d));
+			api.me().then((m) => (ttsEnabled = m.tts));
 			api.personas().then((p) => {
 				personas = p.personas;
+				hasCustom = p.has_custom;
+				const valid = [...p.personas.map((x) => x.slug), ...(p.has_custom ? ['custom'] : [])];
+				if (!valid.includes(prefPersona.value)) prefPersona.value = p.default;
 				persona = prefPersona.value;
 			});
 			cardMeta().then((m) => (meta = m));
@@ -131,6 +143,10 @@
 			// "Read this card" retry button shows instead of stranding it.
 			if (!ok) focused[i] = '';
 		}
+		if (ok && autoRead) {
+			await tick(); // the button mounts on the same state change
+			audioBtns[i]?.play();
+		}
 	}
 
 	async function revealWholePicture() {
@@ -151,6 +167,10 @@
 		} finally {
 			streaming = null;
 			if (!ok) comprehensive = ''; // failed: show the Reveal button again to retry
+		}
+		if (ok && autoRead) {
+			await tick();
+			compBtn?.play();
 		}
 	}
 
@@ -202,6 +222,29 @@
 				</p>
 			</div>
 			<div class="actions">
+				<!-- Mid-reading switches apply from the next card on; already-read
+				     cards keep the persona (and voice) that read them. -->
+				<select
+					class="reader"
+					bind:value={persona}
+					onchange={() => { if (persona) prefPersona.value = persona; }}
+					aria-label="Reader persona"
+				>
+					{#each personas as p (p.slug)}
+						<option value={p.slug} title={p.description}>{p.name}</option>
+					{/each}
+					{#if hasCustom}<option value="custom">Custom</option>{/if}
+				</select>
+				{#if ttsEnabled}
+					<label class="autoread" title="Speak each reading aloud as it completes">
+						<input
+							type="checkbox"
+							checked={autoRead}
+							onchange={(e) => (prefAutoRead.value = String(e.currentTarget.checked))}
+						/>
+						🔊 Read aloud
+					</label>
+				{/if}
 				<a class="link" href="/journal/{reading.id}">Saved to journal ✓</a>
 				<button onclick={() => { readingStore.set(null); goto('/'); }}>New reading</button>
 				<button class="danger" onclick={discard} disabled={discarding}>
@@ -237,6 +280,15 @@
 								<button class="namelink" onclick={() => (zoomedIdx = i)}>
 									{cardName(drawn)}{drawn.reversed ? ' (reversed)' : ''}
 								</button>
+								{#if ttsEnabled && focused[i] && streaming !== i}
+									{#key persona}
+										<AudioButton
+											bind:this={audioBtns[i]}
+											src={api.readingAudio(reading.id, i, persona)}
+											label="Read this card aloud"
+										/>
+									{/key}
+								{/if}
 							</h3>
 							{#if focused[i]}
 								{@const paras = toParagraphs(focused[i])}
@@ -256,9 +308,21 @@
 			{/each}
 		</ol>
 
-		{#if allRevealed}
+		<!-- A single-card reading IS its own whole picture — no synthesis step. -->
+		{#if allRevealed && cards.length > 1}
 			<section class="comprehensive">
-				<h2>The whole picture</h2>
+				<h2>
+					The whole picture
+					{#if ttsEnabled && comprehensive && streaming !== 'comprehensive'}
+						{#key persona}
+							<AudioButton
+								bind:this={compBtn}
+								src={api.readingAudio(reading.id, -1, persona)}
+								label="Read the whole picture aloud"
+							/>
+						{/key}
+					{/if}
+				</h2>
 				{#if comprehensive}
 					{@const cparas = toParagraphs(comprehensive)}
 					{#each cparas as para, i (i)}
@@ -311,6 +375,20 @@
 	}
 	.link {
 		color: var(--accent);
+	}
+	.reader {
+		width: auto;
+	}
+	.autoread {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		color: var(--text-dim);
+		font-size: 0.9rem;
+		cursor: pointer;
+	}
+	.autoread input {
+		accent-color: var(--gold);
 	}
 	.danger {
 		border-color: var(--danger);

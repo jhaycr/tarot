@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type SavedReading } from '$lib/api';
+	import AudioButton from '$lib/AudioButton.svelte';
 	import Lightbox from '$lib/Lightbox.svelte';
 	import VisibilitySelect from '$lib/VisibilitySelect.svelte';
 	import { toParagraphs } from '$lib/text';
@@ -17,6 +18,7 @@
 	let notesSaved = $state(true);
 	let zoomedIdx = $state<number | null>(null);
 	const zoomed = $derived(zoomedIdx !== null && reading ? reading.cards[zoomedIdx] : null);
+	let ttsEnabled = $state(false);
 
 	function nav(dir: -1 | 1) {
 		if (zoomedIdx === null || !reading) return;
@@ -34,6 +36,7 @@
 			.catch(() => goto('/journal'));
 		api.decks().then((d) => (decks = d));
 		cardMeta().then((c) => (meta = c));
+		api.me().then((m) => (ttsEnabled = m.tts));
 	});
 
 	const viewDeckInfo = $derived(decks.find((d) => d.slug === viewDeck));
@@ -179,14 +182,20 @@
 				{#if it.focused?.[String(i)]}
 					<div class="fr">
 						<h3>{deckCardName(drawn.card.name, viewDeckInfo)}{drawn.reversed ? ' (reversed)' : ''}
-							<span class="dim">· {drawn.position.name}</span></h3>
+							<span class="dim">· {drawn.position.name}</span>
+							{#if ttsEnabled}
+								<AudioButton src={api.readingAudio(reading.id, i)} label="Read this card aloud" />
+							{/if}</h3>
 						{#each toParagraphs(it.focused[String(i)]) as para, p (p)}<p>{para}</p>{/each}
 					</div>
 				{/if}
 			{/each}
 			{#if it.comprehensive}
 				<div class="fr whole">
-					<h3>The whole picture</h3>
+					<h3>The whole picture
+						{#if ttsEnabled}
+							<AudioButton src={api.readingAudio(reading.id, -1)} label="Read the whole picture aloud" />
+						{/if}</h3>
 					{#each toParagraphs(it.comprehensive) as para, i (i)}<p>{para}</p>{/each}
 				</div>
 			{/if}

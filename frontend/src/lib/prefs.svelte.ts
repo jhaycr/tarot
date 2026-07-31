@@ -19,6 +19,7 @@ export const prefReversals = persisted('tarot.reversals', 'true');
 export const prefPersona = persisted('tarot.persona', 'alice');
 export const prefGuidedMode = persisted('tarot.guidedMode', 'isolated'); // isolated | cumulative
 export const prefJournalLayout = persisted('tarot.journalLayout', 'grid');
+export const prefAutoRead = persisted('tarot.autoRead', 'false'); // speak pieces as they complete
 
 function persistedList(key: string): { value: string[] } {
 	let value = $state<string[]>(JSON.parse(localStorage.getItem(key) ?? '[]'));

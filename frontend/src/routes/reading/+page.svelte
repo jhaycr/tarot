@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { tick } from 'svelte';
 	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type Persona } from '$lib/api';
-	import { prefPersona } from '$lib/prefs.svelte';
+	import { prefAutoRead, prefPersona } from '$lib/prefs.svelte';
+	import AudioButton from '$lib/AudioButton.svelte';
 	import Card from '$lib/Card.svelte';
 	import Lightbox from '$lib/Lightbox.svelte';
 	import { readingStore } from '$lib/reading.svelte';
@@ -16,11 +18,15 @@
 	let savedId = $state<number | null>(null);
 	let saving = $state(false);
 	let llmEnabled = $state(false);
+	let ttsEnabled = $state(false);
 	let interpretation = $state('');
 	let interpreting = $state(false);
 	let interpretError = $state('');
 	let personas = $state<Persona[]>([]);
 	let hasCustom = $state(false);
+	let interpAudio = $state<ReturnType<typeof AudioButton> | undefined>(undefined);
+	// the persona that produced the current interpretation, so the voice matches
+	let interpretedWith = $state<string | null>(null);
 
 	$effect(() => {
 		if (!reading) goto('/');
@@ -29,6 +35,7 @@
 			cardMeta().then((c) => (meta = c));
 			api.me().then((m) => {
 				llmEnabled = m.interpretation;
+				ttsEnabled = m.tts;
 				if (m.interpretation) {
 					api.personas().then((p) => {
 						personas = p.personas;
@@ -101,6 +108,11 @@
 		try {
 			const res = await api.interpret(reading.question, reading.spread, reading.cards, prefPersona.value);
 			interpretation = res.interpretation;
+			interpretedWith = prefPersona.value;
+			if (prefAutoRead.value === 'true') {
+				await tick(); // the button mounts with the interpretation
+				interpAudio?.play();
+			}
 		} catch (e) {
 			interpretError = String(e);
 		} finally {
@@ -169,7 +181,16 @@
 		{#if llmEnabled && allFlipped}
 			<aside class="interpretation">
 				{#if interpretation}
-					<h2>Interpretation</h2>
+					<h2>
+						Interpretation
+						{#if ttsEnabled}
+							<AudioButton
+								bind:this={interpAudio}
+								src={() => api.speak(interpretation, interpretedWith)}
+								label="Read the interpretation aloud"
+							/>
+						{/if}
+					</h2>
 					{#each interpretation.split('\n\n') as para, i (i)}
 						<p>{para}</p>
 					{/each}

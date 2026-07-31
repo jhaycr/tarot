@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import config as cfgfile, crypto, db, dedupe, importer, interpret as interp, sse, users
+from tarot import config as cfgfile, crypto, db, dedupe, importer, interpret as interp, sse, tts, users
 from tarot.auth import (
     LOGOUT_URL,
     current_user,
@@ -95,6 +95,7 @@ def me(request: Request, user: User):
         "user": user,
         "display_name": display_name(request),
         "interpretation": interp.config() is not None,
+        "tts": tts.config() is not None,
         "is_admin": is_admin(user),
         "authenticated": authenticated,
         "logout_url": LOGOUT_URL if authenticated else None,
@@ -660,19 +661,32 @@ def set_reading_settings(req: ReadingSettingsRequest, user: User):
     return get_reading_settings(user)
 
 
+class VoiceBlock(BaseModel):
+    voice: str | None = None
+    speed: float | None = Field(default=None, ge=0.25, le=4.0)
+    instructions: str | None = Field(default=None, max_length=2000)
+
+
 class PromptRequest(BaseModel):
     prompt: str = Field(default="", max_length=8000)
+    voice: VoiceBlock | None = None  # custom persona's voice; lives with the prompt
 
 
 @app.get("/api/settings/prompt")
 def get_prompt(user: User):
-    return {"prompt": db.get_user_prompt(user), "personas": {s: p["prompt"] for s, p in interp.PERSONAS.items()}}
+    return {
+        "prompt": db.get_user_prompt(user),
+        "voice": db.get_user_voice(user),
+        "personas": {s: p["prompt"] for s, p in interp.PERSONAS.items()},
+    }
 
 
 @app.put("/api/settings/prompt")
 def set_prompt(req: PromptRequest, user: User):
     db.set_user_prompt(user, req.prompt)
-    return {"prompt": db.get_user_prompt(user)}
+    values = {k: v for k, v in req.voice.model_dump().items() if v is not None} if req.voice else None
+    db.set_user_voice(user, values or None)
+    return {"prompt": db.get_user_prompt(user), "voice": db.get_user_voice(user)}
 
 
 class SaveReadingRequest(BaseModel):
@@ -873,6 +887,143 @@ def interpret_comprehensive(reading_id: int, req: StreamInterpretRequest,
     max_tokens = max(base, 400 + 220 * n)
     return _stream_and_persist(request, user, req.persona, prompt, content, persist,
                                max_tokens=max_tokens)
+
+
+# no-cache (NOT no-store): the URL stays stable while the audio behind it
+# changes whenever the persona's voice settings do, so the browser must
+# revalidate on every play. FileResponse's per-file ETag makes an unchanged
+# piece a 304 and a re-voiced piece a full fetch.
+AUDIO_CACHE = {"Cache-Control": "private, no-cache"}
+
+
+def _tts_config_or_409() -> dict:
+    cfg = tts.config()
+    if cfg is None:
+        raise HTTPException(409, "TTS is not configured")
+    return cfg
+
+
+@app.get("/api/readings/{reading_id}/audio/{position}")
+async def reading_audio(reading_id: int, position: int, user: User, persona: str | None = None):
+    """Spoken audio for one interpretation piece (position -1 = the whole-spread
+    row). Anyone who can see the reading can listen; generated on first play,
+    cached after. `persona` overrides the voice (the guided page passes its
+    reader picker so audio follows the current selection); the text itself
+    always stays as written."""
+    cfg = _tts_config_or_409()
+    reading = await run_in_threadpool(db.get_reading, reading_id, user)
+    if not reading:
+        raise HTTPException(404, "reading not found")
+    row = await run_in_threadpool(db.get_interpretation, reading_id, position)
+    if not row:
+        raise HTTPException(404, f"no interpretation at position {position}")
+
+    card = reading["cards"][position] if position >= 0 and position < len(reading["cards"]) else None
+    script = tts.build_script(tts.spoken_intro(card), row["text"])
+    # explicit persona = the requester's choice (their own custom voice);
+    # stored persona = whoever wrote it (the owner's custom voice)
+    if persona:
+        voice = await run_in_threadpool(tts.resolve_voice, persona, user)
+    else:
+        voice = await run_in_threadpool(tts.resolve_voice, row["persona"], reading["owner"])
+    try:
+        path = await tts.get_or_generate(script, voice, cfg)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"TTS endpoint error: {e}")
+    return FileResponse(path, media_type="audio/mpeg", headers=AUDIO_CACHE)
+
+
+class TtsRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=8000)
+    persona: str | None = None  # "alice" | "selene" | "custom" | None = user default
+
+
+@app.post("/api/tts")
+async def tts_speak(req: TtsRequest, user: User):
+    """Audio for ephemeral text — the quick reading's one-shot interpretation,
+    which is never persisted. Cached like everything else, so replaying the
+    same text is free."""
+    cfg = _tts_config_or_409()
+    persona = req.persona or ("custom" if db.get_user_prompt(user) else interp.default_persona())
+    voice = await run_in_threadpool(tts.resolve_voice, persona, user)
+    script = tts.build_script("Your reading.", req.text)
+    try:
+        path = await tts.get_or_generate(script, voice, cfg)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"TTS endpoint error: {e}")
+    return FileResponse(path, media_type="audio/mpeg", headers=AUDIO_CACHE)
+
+
+class TtsSettingsRequest(BaseModel):
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None  # write-only; empty string clears the stored key
+    voices: dict[str, VoiceBlock] | None = None  # keys: alice / selene
+
+
+def _file_owns_voices() -> list[str]:
+    file_voices = cfgfile.get("tts", "voices")
+    if not isinstance(file_voices, dict):
+        return []
+    return [p for p in tts.VOICE_DEFAULTS if isinstance(file_voices.get(p), dict)]
+
+
+@app.get("/api/settings/tts")
+def get_tts_settings(user: User):
+    require_admin(user)
+    managed = _managed("tts", "base_url", "model")
+    if cfgfile.tts_api_key() is not None:
+        managed.append("api_key")
+    managed += [f"voice_{p}" for p in _file_owns_voices()]
+    return {
+        "base_url": cfgfile.get("tts", "base_url")
+        or db.get_setting("tts_base_url")
+        or os.environ.get("TAROT_TTS_BASE_URL", ""),
+        "model": cfgfile.get("tts", "model")
+        or db.get_setting("tts_model")
+        or os.environ.get("TAROT_TTS_MODEL", "")
+        or tts.DEFAULT_MODEL,
+        "api_key_set": bool(
+            cfgfile.tts_api_key()
+            or db.get_setting("tts_api_key")
+            or os.environ.get("TAROT_TTS_API_KEY")
+        ),
+        "voices": {p: tts.resolve_voice(p, user) for p in tts.VOICE_DEFAULTS},
+        "defaults": tts.VOICE_DEFAULTS,
+        "managed": managed,
+        "config_file": str(cfgfile.config_path()) if cfgfile.exists() else None,
+        "config_error": cfgfile.error() or None,
+    }
+
+
+@app.put("/api/settings/tts")
+def set_tts_settings(req: TtsSettingsRequest, user: User):
+    require_admin(user)
+    _reject_managed("tts", base_url=req.base_url, model=req.model)
+    if req.api_key is not None and cfgfile.tts_api_key() is not None:
+        raise HTTPException(
+            409, f"api_key managed by {cfgfile.config_path()} — edit the config file"
+        )
+    if req.voices:
+        file_owned = set(_file_owns_voices())
+        clashes = sorted(set(req.voices) & file_owned)
+        if clashes:
+            raise HTTPException(
+                409,
+                f"voices ({', '.join(clashes)}) managed by {cfgfile.config_path()} — edit the config file",
+            )
+    if req.base_url is not None:
+        db.set_setting("tts_base_url", req.base_url.strip())
+    if req.model is not None:
+        db.set_setting("tts_model", req.model.strip())
+    if req.api_key is not None:
+        db.set_setting("tts_api_key", crypto.encrypt(req.api_key.strip()) if req.api_key.strip() else "")
+    for persona, block in (req.voices or {}).items():
+        if persona not in tts.VOICE_DEFAULTS:
+            raise HTTPException(400, f"unknown persona '{persona}'")
+        values = {k: v for k, v in block.model_dump().items() if v is not None}
+        db.set_setting(f"tts_voice_{persona}", json.dumps(values) if values else "")
+    return get_tts_settings(user)
 
 
 class SpaStaticFiles(StaticFiles):
