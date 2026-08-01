@@ -105,7 +105,7 @@
 			}
 			seedFromPersisted();
 		} catch (e) {
-			error = String(e);
+			error = errMsg(e);
 		}
 	}
 
@@ -146,7 +146,7 @@
 				else if (ev.type === 'error') error = ev.data.message;
 			}
 		} catch (e) {
-			if ((e as Error).name !== 'AbortError') error = String(e);
+			if ((e as Error).name !== 'AbortError') error = errMsg(e);
 		} finally {
 			streaming = null;
 			// Failed/aborted mid-stream: drop the un-persisted partial so the
@@ -173,7 +173,7 @@
 				else if (ev.type === 'error') error = ev.data.message;
 			}
 		} catch (e) {
-			if ((e as Error).name !== 'AbortError') error = String(e);
+			if ((e as Error).name !== 'AbortError') error = errMsg(e);
 		} finally {
 			streaming = null;
 			if (!ok) comprehensive = ''; // failed: show the Reveal button again to retry
@@ -185,8 +185,14 @@
 	}
 
 	function retryFocused(i: number) {
+		if (streaming !== null) return; // same guard as flip: never two streams at once
 		error = '';
 		streamFocused(i);
+	}
+
+	// 429 limit messages (and any API detail) must read verbatim, not "Error: …"
+	function errMsg(e: unknown): string {
+		return e instanceof Error ? e.message : String(e);
 	}
 
 	function nav(dir: -1 | 1) {
@@ -213,7 +219,7 @@
 			readingStore.set(null);
 			goto('/');
 		} catch (e) {
-			error = String(e);
+			error = errMsg(e);
 			discarding = false;
 		}
 	}

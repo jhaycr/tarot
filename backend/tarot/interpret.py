@@ -351,48 +351,55 @@ async def interpret_stream(system_prompt: str, user_content: str, max_tokens: in
     and the route can still turn it into a real HTTP status.
 
     With `usage_meta` ({owner, kind, reading_id?}), asks the provider for a
-    usage chunk (stream_options.include_usage) and writes the ledger row at
-    natural completion — an aborted stream records nothing (the token counts
-    never arrive). Providers that reject stream_options get one retry without.
+    usage chunk (stream_options.include_usage) and writes the ledger row in a
+    finally — an aborted stream records the chars-streamed-so-far fallback
+    (the provider bills the partial completion, so the token cap must see
+    it). Providers that reject stream_options get one retry without.
     """
     cfg = config()
     if not cfg:
         raise RuntimeError("LLM interpretation is not configured")
     usage: dict | None = None
     output_chars = 0
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
-        for include_usage in ([True, False] if usage_meta else [False]):
-            async with client.stream(
-                "POST",
-                f"{cfg['base_url']}/chat/completions",
-                headers=_auth_headers(cfg),
-                json=_chat_body(system_prompt, user_content, cfg, stream=True,
-                                max_tokens=max_tokens, include_usage=include_usage),
-            ) as resp:
-                if include_usage and resp.status_code in (400, 422):
-                    continue  # provider rejected stream_options — retry without
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    line = line.strip()
-                    if not line or line.startswith(":"):  # blank or SSE keepalive comment
-                        continue
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    if chunk.get("usage"):
-                        usage = chunk["usage"]
-                    delta = (chunk.get("choices") or [{}])[0].get("delta", {})
-                    text = delta.get("content")
-                    if text:
-                        output_chars += len(text)
-                        yield text
-                break  # completed (or ran without usage support) — no retry
-    if usage_meta:
-        from starlette.concurrency import run_in_threadpool
-        await run_in_threadpool(_record_usage, usage_meta, cfg, usage, output_chars)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
+            for include_usage in ([True, False] if usage_meta else [False]):
+                async with client.stream(
+                    "POST",
+                    f"{cfg['base_url']}/chat/completions",
+                    headers=_auth_headers(cfg),
+                    json=_chat_body(system_prompt, user_content, cfg, stream=True,
+                                    max_tokens=max_tokens, include_usage=include_usage),
+                ) as resp:
+                    if include_usage and resp.status_code in (400, 422):
+                        continue  # provider rejected stream_options — retry without
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line or line.startswith(":"):  # blank or SSE keepalive comment
+                            continue
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        if chunk.get("usage"):
+                            usage = chunk["usage"]
+                        delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+                        text = delta.get("content")
+                        if text:
+                            output_chars += len(text)
+                            yield text
+                    break  # completed (or ran without usage support) — no retry
+    finally:
+        # Runs on natural completion, disconnect (aclose -> GeneratorExit at the
+        # yield) and mid-stream errors alike. Awaiting here is legal during
+        # aclose(); only yielding is not. Skip when nothing streamed (handshake
+        # failure) so failed calls are never billed.
+        if usage_meta and (usage or output_chars):
+            from starlette.concurrency import run_in_threadpool
+            await run_in_threadpool(_record_usage, usage_meta, cfg, usage, output_chars)

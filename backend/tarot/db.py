@@ -664,13 +664,25 @@ def readings_charged(owner: str, day: str) -> int:
         ).fetchone()[0]
 
 
+def reading_charge_exists(owner: str, fingerprint: str, day: str | None = None) -> bool:
+    """Was this fingerprint ever charged (any day), or on `day` if given?"""
+    with connect() as con:
+        q = "SELECT 1 FROM reading_charges WHERE owner = ? AND fingerprint = ?"
+        args: list = [owner, fingerprint]
+        if day is not None:
+            q += " AND day = ?"
+            args.append(day)
+        return con.execute(q + " LIMIT 1", args).fetchone() is not None
+
+
 def try_charge_reading(owner: str, day: str, fingerprint: str, limit: float | None) -> bool:
     """Charge idempotently; returns False only when the cap blocks a NEW charge.
 
-    Check and insert share one connection/transaction so two racing requests
-    can't both squeeze under the cap via separate counts.
+    BEGIN IMMEDIATE takes the write lock before the count, so two racing
+    requests can't both squeeze under the cap via separate counts.
     """
     with connect() as con:
+        con.execute("BEGIN IMMEDIATE")
         seen = con.execute(
             "SELECT 1 FROM reading_charges WHERE owner = ? AND day = ? AND fingerprint = ?",
             (owner, day, fingerprint),

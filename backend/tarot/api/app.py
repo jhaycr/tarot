@@ -524,14 +524,24 @@ async def interpret_reading(req: InterpretRequest, user: User):
         raise HTTPException(404, f"unknown persona '{req.persona}'")
     except ValueError as e:
         raise HTTPException(400, str(e))
-    await run_in_threadpool(
-        limits.charge_reading, user, _draw_fingerprint("quick", user, req.question, req.cards))
+    try:
+        fp = _draw_fingerprint("quick", user, req.question, req.cards)
+    except (KeyError, TypeError):
+        raise HTTPException(422, "malformed cards payload")
+    # Gate both caps up front, but charge the reading only after the LLM call
+    # succeeds — a provider failure (or the token 429 below) must not consume
+    # a reading slot. Retrying the same draw stays free by fingerprint.
     await run_in_threadpool(limits.check_tokens, user)
+    await run_in_threadpool(limits.precheck_reading, user, fp)
     try:
         text = await interp.interpret(req.question, spread_name, req.cards, system_prompt=prompt,
                                       usage_meta={"owner": user, "kind": "single"})
     except httpx.HTTPError as e:
         raise HTTPException(502, f"LLM endpoint error: {e}")
+    try:
+        await run_in_threadpool(limits.charge_reading, user, fp)
+    except limits.LimitExceeded:
+        pass  # raced past the precheck: the reading already happened, accept the overshoot
     return {"interpretation": text, "persona": req.persona or interp.default_persona()}
 
 
@@ -908,10 +918,15 @@ def interpret_focused(reading_id: int, position: int, req: StreamInterpretReques
     cards = reading["cards"]
     if position < 0 or position >= len(cards):
         raise HTTPException(404, f"no card at position {position}")
-    # No token check here: the cap was enforced when the reading was created,
-    # and a reading you were allowed to start can always be finished (overshoot
-    # is bounded by one reading).
     prompt = _resolve_persona_or_400(req.persona, user)
+    # Caps gate the START of a reading: one charged at creation streams free
+    # forever (even across midnight), but a never-charged reading (saved via
+    # plain POST /api/readings) pays its one charge the first time
+    # interpretation begins — otherwise the readings cap has a free side door.
+    # No token check: a reading you were allowed to start can always be
+    # finished (overshoot is bounded by one reading).
+    limits.charge_reading_once(
+        user, _draw_fingerprint("guided", user, reading["question"], reading["cards"]))
 
     spread = SPREADS_BY_SLUG.get(reading["spread"])
     spread_name = spread["name"] if spread else reading["spread"]
@@ -935,8 +950,11 @@ def interpret_comprehensive(reading_id: int, req: StreamInterpretRequest,
     reading = db.get_reading(reading_id, user)
     if not reading or reading["owner"] != user:
         raise HTTPException(404, "reading not found or not yours")
-    # Finishing an authorized reading is never blocked — see interpret_focused.
     prompt = _resolve_persona_or_400(req.persona, user)
+    # Same charge-on-start rule as interpret_focused; finishing an already-
+    # charged reading is never blocked.
+    limits.charge_reading_once(
+        user, _draw_fingerprint("guided", user, reading["question"], reading["cards"]))
 
     spread = SPREADS_BY_SLUG.get(reading["spread"])
     spread_name = spread["name"] if spread else reading["spread"]

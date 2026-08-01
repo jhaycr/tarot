@@ -111,6 +111,43 @@ def charge_reading(user: str, fingerprint: str) -> None:
         raise LimitExceeded("readings")
 
 
+def precheck_reading(user: str, fingerprint: str) -> None:
+    """Raise if a NEW charge of this fingerprint would be blocked today.
+
+    Charges nothing — for callers that must gate the cap up front but only
+    charge after the provider call succeeds (a failed call must not consume
+    a slot). A fingerprint already charged today always passes (retry).
+    """
+    from tarot import db
+
+    if _exempt(user):
+        return
+    limit = config()["readings_per_day"]
+    if limit is None:
+        return
+    day = day_key()
+    if db.reading_charge_exists(user, fingerprint, day=day):
+        return
+    if db.readings_charged(user, day) >= limit:
+        raise LimitExceeded("readings")
+
+
+def charge_reading_once(user: str, fingerprint: str) -> None:
+    """Charge unless this fingerprint was ever charged, on any day.
+
+    The finish-what-you-started rule for readings that outlive their day:
+    a reading charged at creation streams free forever, even across
+    midnight, while a never-charged reading pays when interpretation starts.
+    """
+    from tarot import db
+
+    if _exempt(user):
+        return
+    if db.reading_charge_exists(user, fingerprint):
+        return
+    charge_reading(user, fingerprint)
+
+
 def check_tokens(user: str) -> None:
     from tarot import db
 
