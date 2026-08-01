@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { tick } from 'svelte';
 	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type Persona } from '$lib/api';
-	import { prefAutoRead, prefPersona } from '$lib/prefs.svelte';
+	import { prefPersona } from '$lib/prefs.svelte';
 	import AudioButton from '$lib/AudioButton.svelte';
 	import Card from '$lib/Card.svelte';
 	import Lightbox from '$lib/Lightbox.svelte';
@@ -19,11 +19,11 @@
 	let saving = $state(false);
 	let llmEnabled = $state(false);
 	let ttsEnabled = $state(false);
+	let autoRead = $state(false);
 	let interpretation = $state('');
 	let interpreting = $state(false);
 	let interpretError = $state('');
 	let personas = $state<Persona[]>([]);
-	let hasCustom = $state(false);
 	let interpAudio = $state<ReturnType<typeof AudioButton> | undefined>(undefined);
 	// the persona that produced the current interpretation, so the voice matches
 	let interpretedWith = $state<string | null>(null);
@@ -36,12 +36,12 @@
 			api.me().then((m) => {
 				llmEnabled = m.interpretation;
 				ttsEnabled = m.tts;
+				autoRead = m.settings.auto_read_audio;
 				if (m.interpretation) {
 					api.personas().then((p) => {
 						personas = p.personas;
-						hasCustom = p.has_custom;
-						const valid = [...p.personas.map((x) => x.slug), ...(p.has_custom ? ['custom'] : [])];
-						if (!valid.includes(prefPersona.value)) prefPersona.value = p.default;
+						if (!p.personas.some((x) => x.slug === prefPersona.value))
+							prefPersona.value = p.default;
 					});
 				}
 			});
@@ -109,7 +109,7 @@
 			const res = await api.interpret(reading.question, reading.spread, reading.cards, prefPersona.value);
 			interpretation = res.interpretation;
 			interpretedWith = prefPersona.value;
-			if (prefAutoRead.value === 'true') {
+			if (autoRead) {
 				await tick(); // the button mounts with the interpretation
 				interpAudio?.play();
 			}
@@ -200,7 +200,6 @@
 							{#each personas as p (p.slug)}
 								<option value={p.slug} title={p.description}>{p.name}</option>
 							{/each}
-							{#if hasCustom}<option value="custom">Custom</option>{/if}
 						</select>
 						<button onclick={interpret} disabled={interpreting}>
 							{interpreting ? 'Consulting the cards…' : '✶ Interpret this reading'}

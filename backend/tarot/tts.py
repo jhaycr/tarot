@@ -131,16 +131,11 @@ def _normalize(block: dict | None, base: dict) -> dict:
 def resolve_voice(persona: str | None, owner: str) -> dict:
     """The voice block for a persona: file > DB > shipped defaults.
 
-    `custom` uses the reading owner's own block (stored with their custom
-    prompt), falling back to the default persona's. Unknown/absent persona
-    falls back to the instance default persona.
+    Unknown/absent persona (including the retired "custom") falls back to
+    the instance default persona.
     """
     from tarot import db
     from tarot.interpret import default_persona
-
-    if persona == "custom":
-        base = resolve_voice(default_persona(), owner)
-        return _normalize(db.get_user_voice(owner), base)
 
     if persona not in VOICE_DEFAULTS:
         persona = default_persona()
@@ -224,9 +219,12 @@ def _chunks(script: str) -> list[str]:
     return parts
 
 
-async def synthesize(script: str, voice: dict, cfg: dict) -> bytes:
+async def synthesize(script: str, voice: dict, cfg: dict,
+                     usage_meta: dict | None = None) -> bytes:
     """Generate MP3 for the script, splitting over-cap text and concatenating
-    the segments (same codec params -> a valid stream)."""
+    the segments (same codec params -> a valid stream). With `usage_meta`
+    ({owner, kind, reading_id?}), writes one ledger row per provider call —
+    cache hits never reach here, so only real spend is recorded."""
     headers = {"Content-Type": "application/json"}
     if cfg["api_key"]:
         headers["Authorization"] = f"Bearer {cfg['api_key']}"
@@ -245,6 +243,21 @@ async def synthesize(script: str, voice: dict, cfg: dict) -> bytes:
             resp = await client.post(f"{cfg['base_url']}/audio/speech", json=body, headers=headers)
             resp.raise_for_status()
             out += resp.content
+            if usage_meta:
+                from starlette.concurrency import run_in_threadpool
+
+                from tarot import db
+
+                try:
+                    await run_in_threadpool(
+                        db.record_usage,
+                        owner=usage_meta["owner"], component="tts",
+                        kind=usage_meta.get("kind", "speak"), model=cfg["model"],
+                        reading_id=usage_meta.get("reading_id"),
+                        characters=len(chunk), audio_bytes=len(resp.content),
+                    )
+                except Exception:
+                    pass  # accounting must never break playback
     return out
 
 
@@ -285,7 +298,8 @@ def _evict(budget_bytes: int) -> None:
         total -= row["size_bytes"]
 
 
-async def get_or_generate(script: str, voice: dict, cfg: dict):
+async def get_or_generate(script: str, voice: dict, cfg: dict,
+                          usage_meta: dict | None = None):
     """Path to cached-or-fresh MP3 for this script+voice+model."""
     from fastapi.concurrency import run_in_threadpool
 
@@ -299,7 +313,7 @@ async def get_or_generate(script: str, voice: dict, cfg: dict):
             await run_in_threadpool(db.tts_cache_touch, key)
             return path
         db.tts_cache_delete(key)  # stale row without a file (evicted/crashed)
-        audio = await synthesize(script, voice, cfg)
+        audio = await synthesize(script, voice, cfg, usage_meta=usage_meta)
 
         def persist():
             cache_dir().mkdir(parents=True, exist_ok=True)

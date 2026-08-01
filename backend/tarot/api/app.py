@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import config as cfgfile, crypto, db, dedupe, importer, interpret as interp, sse, tts, users
+from tarot import config as cfgfile, crypto, db, dedupe, importer, interpret as interp, limits, sse, tts, users
 from tarot.auth import (
     LOGOUT_URL,
     current_user,
@@ -83,6 +83,24 @@ def get_deck_or_404(slug: str, user: str):
     return deck
 
 
+@app.exception_handler(limits.LimitExceeded)
+async def _limit_exceeded(request: Request, exc: limits.LimitExceeded):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(status_code=429, content={"detail": str(exc)})
+
+
+def _draw_fingerprint(prefix: str, user: str, question: str | None, cards: list[dict]) -> str:
+    """Content hash of a draw, so re-interpreting/recreating the same spread
+    charges the daily readings cap exactly once."""
+    import hashlib
+
+    payload = json.dumps(
+        [user, question or "", sorted((c["card"]["index"], bool(c.get("reversed"))) for c in cards)]
+    )
+    return f"{prefix}:{hashlib.sha256(payload.encode()).hexdigest()}"
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "version": VERSION}
@@ -96,6 +114,8 @@ def me(request: Request, user: User):
         "display_name": display_name(request),
         "interpretation": interp.config() is not None,
         "tts": tts.config() is not None,
+        "settings": {"auto_read_audio": db.get_user_setting(user, "auto_read_audio") == "true"},
+        "limits": limits.status(user) if limits.enabled() else {"enabled": False},
         "is_admin": is_admin(user),
         "authenticated": authenticated,
         "logout_url": LOGOUT_URL if authenticated else None,
@@ -499,16 +519,20 @@ async def interpret_reading(req: InterpretRequest, user: User):
     spread = SPREADS_BY_SLUG.get(req.spread)
     spread_name = spread["name"] if spread else req.spread
     try:
-        prompt = interp.resolve_prompt(req.persona, db.get_user_prompt(user))
+        prompt = interp.resolve_prompt(req.persona)
     except KeyError:
         raise HTTPException(404, f"unknown persona '{req.persona}'")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    await run_in_threadpool(
+        limits.charge_reading, user, _draw_fingerprint("quick", user, req.question, req.cards))
+    await run_in_threadpool(limits.check_tokens, user)
     try:
-        text = await interp.interpret(req.question, spread_name, req.cards, system_prompt=prompt)
+        text = await interp.interpret(req.question, spread_name, req.cards, system_prompt=prompt,
+                                      usage_meta={"owner": user, "kind": "single"})
     except httpx.HTTPError as e:
         raise HTTPException(502, f"LLM endpoint error: {e}")
-    return {"interpretation": text, "persona": req.persona or ("custom" if db.get_user_prompt(user) else interp.default_persona())}
+    return {"interpretation": text, "persona": req.persona or interp.default_persona()}
 
 
 @app.get("/api/personas")
@@ -518,7 +542,6 @@ def list_personas(user: User):
             {"slug": slug, "name": p["name"], "description": p["description"]}
             for slug, p in interp.PERSONAS.items()
         ],
-        "has_custom": bool(db.get_user_prompt(user)),
         "default": interp.default_persona(),
     }
 
@@ -661,32 +684,65 @@ def set_reading_settings(req: ReadingSettingsRequest, user: User):
     return get_reading_settings(user)
 
 
+class LimitsSettingsRequest(BaseModel):
+    # None = leave alone; 0 = disable (stored as unset)
+    readings_per_day: float | None = Field(default=None, ge=0)
+    llm_tokens_per_day: float | None = Field(default=None, ge=0)
+    tts_minutes_per_day: float | None = Field(default=None, ge=0)
+
+
+@app.get("/api/settings/limits")
+def get_limits_settings(user: User):
+    require_admin(user)
+    return {
+        **limits.config(),
+        "managed": _managed("limits", *limits.KEYS),
+        "config_file": str(cfgfile.config_path()) if cfgfile.exists() else None,
+        "config_error": cfgfile.error() or None,
+    }
+
+
+@app.put("/api/settings/limits")
+def set_limits_settings(req: LimitsSettingsRequest, user: User):
+    require_admin(user)
+    _reject_managed("limits", **req.model_dump())
+    for key in limits.KEYS:
+        value = getattr(req, key)
+        if value is not None:
+            db.set_setting(f"limit_{key}", "" if value == 0 else str(value))
+    return get_limits_settings(user)
+
+
+class UserSettingsRequest(BaseModel):
+    auto_read_audio: bool | None = None
+
+
+@app.get("/api/settings/me")
+def get_my_settings(user: User):
+    """Per-user settings that follow the account across devices."""
+    return {"auto_read_audio": db.get_user_setting(user, "auto_read_audio") == "true"}
+
+
+@app.put("/api/settings/me")
+def set_my_settings(req: UserSettingsRequest, user: User):
+    if req.auto_read_audio is not None:
+        db.set_user_setting(user, "auto_read_audio", "true" if req.auto_read_audio else "false")
+    return get_my_settings(user)
+
+
+@app.get("/api/admin/usage")
+def admin_usage(user: User, days: int = 30):
+    """Token/character/audio spend of the connected AI components, for the
+    admin usage view. Ledger rows are written per provider call; cache hits
+    and aborted streams cost nothing and record nothing."""
+    require_admin(user)
+    return db.usage_summary(max(1, min(days, 365)))
+
+
 class VoiceBlock(BaseModel):
     voice: str | None = None
     speed: float | None = Field(default=None, ge=0.25, le=4.0)
     instructions: str | None = Field(default=None, max_length=2000)
-
-
-class PromptRequest(BaseModel):
-    prompt: str = Field(default="", max_length=8000)
-    voice: VoiceBlock | None = None  # custom persona's voice; lives with the prompt
-
-
-@app.get("/api/settings/prompt")
-def get_prompt(user: User):
-    return {
-        "prompt": db.get_user_prompt(user),
-        "voice": db.get_user_voice(user),
-        "personas": {s: p["prompt"] for s, p in interp.PERSONAS.items()},
-    }
-
-
-@app.put("/api/settings/prompt")
-def set_prompt(req: PromptRequest, user: User):
-    db.set_user_prompt(user, req.prompt)
-    values = {k: v for k, v in req.voice.model_dump().items() if v is not None} if req.voice else None
-    db.set_user_voice(user, values or None)
-    return {"prompt": db.get_user_prompt(user), "voice": db.get_user_voice(user)}
 
 
 class SaveReadingRequest(BaseModel):
@@ -788,6 +844,11 @@ def create_guided(req: GuidedReadingRequest, user: User):
     """Create the in-progress guided reading up front (resumable)."""
     if req.mode not in GUIDED_MODES:
         raise HTTPException(400, f"mode must be one of {', '.join(GUIDED_MODES)}")
+    # Content-hash fingerprint so the charge lands before the row exists and a
+    # duplicate create of the same draw never double-bills. Both caps gate only
+    # the START of a reading — once created, it can always be finished.
+    limits.check_tokens(user)
+    limits.charge_reading(user, _draw_fingerprint("guided", user, req.question, req.cards))
     r = db.create_guided_reading(
         user, req.question, req.deck, req.spread, req.cards, req.mode, notes=req.notes
     )
@@ -798,7 +859,7 @@ def _resolve_persona_or_400(persona: str | None, user: str) -> str:
     if interp.config() is None:
         raise HTTPException(404, "LLM interpretation is not configured")
     try:
-        return interp.resolve_prompt(persona, db.get_user_prompt(user))
+        return interp.resolve_prompt(persona)
     except KeyError:
         raise HTTPException(404, f"unknown persona '{persona}'")
     except ValueError as e:
@@ -807,12 +868,14 @@ def _resolve_persona_or_400(persona: str | None, user: str) -> str:
 
 def _stream_and_persist(request: Request, user: str, persona: str | None,
                         system_prompt: str, user_content: str, persist,
-                        max_tokens: int | None = None):
+                        max_tokens: int | None = None,
+                        usage_meta: dict | None = None):
     """Shared SSE generator: stream deltas, then persist the full text at natural
     completion only (skipped on disconnect / mid-stream error), then `done`."""
     async def gen():
         parts: list[str] = []
-        agen = interp.interpret_stream(system_prompt, user_content, max_tokens=max_tokens)
+        agen = interp.interpret_stream(system_prompt, user_content, max_tokens=max_tokens,
+                                       usage_meta=usage_meta)
         try:
             async for delta in agen:
                 if await request.is_disconnected():
@@ -845,6 +908,9 @@ def interpret_focused(reading_id: int, position: int, req: StreamInterpretReques
     cards = reading["cards"]
     if position < 0 or position >= len(cards):
         raise HTTPException(404, f"no card at position {position}")
+    # No token check here: the cap was enforced when the reading was created,
+    # and a reading you were allowed to start can always be finished (overshoot
+    # is bounded by one reading).
     prompt = _resolve_persona_or_400(req.persona, user)
 
     spread = SPREADS_BY_SLUG.get(reading["spread"])
@@ -859,7 +925,8 @@ def interpret_focused(reading_id: int, position: int, req: StreamInterpretReques
     def persist(text: str):
         db.set_focused_interpretation(reading_id, user, position, text, persona=req.persona)
 
-    return _stream_and_persist(request, user, req.persona, prompt, content, persist)
+    return _stream_and_persist(request, user, req.persona, prompt, content, persist,
+                               usage_meta={"owner": user, "kind": "focused", "reading_id": reading_id})
 
 
 @app.post("/api/readings/{reading_id}/interpret/comprehensive")
@@ -868,6 +935,7 @@ def interpret_comprehensive(reading_id: int, req: StreamInterpretRequest,
     reading = db.get_reading(reading_id, user)
     if not reading or reading["owner"] != user:
         raise HTTPException(404, "reading not found or not yours")
+    # Finishing an authorized reading is never blocked — see interpret_focused.
     prompt = _resolve_persona_or_400(req.persona, user)
 
     spread = SPREADS_BY_SLUG.get(reading["spread"])
@@ -886,7 +954,9 @@ def interpret_comprehensive(reading_id: int, req: StreamInterpretRequest,
     base = (cfg or {}).get("max_tokens") or interp.DEFAULT_MAX_TOKENS
     max_tokens = max(base, 400 + 220 * n)
     return _stream_and_persist(request, user, req.persona, prompt, content, persist,
-                               max_tokens=max_tokens)
+                               max_tokens=max_tokens,
+                               usage_meta={"owner": user, "kind": "comprehensive",
+                                           "reading_id": reading_id})
 
 
 # no-cache (NOT no-store): the URL stays stable while the audio behind it
@@ -920,14 +990,18 @@ async def reading_audio(reading_id: int, position: int, user: User, persona: str
 
     card = reading["cards"][position] if position >= 0 and position < len(reading["cards"]) else None
     script = tts.build_script(tts.spoken_intro(card), row["text"])
-    # explicit persona = the requester's choice (their own custom voice);
-    # stored persona = whoever wrote it (the owner's custom voice)
+    # explicit persona = the requester's choice; stored persona = whoever wrote it
     if persona:
         voice = await run_in_threadpool(tts.resolve_voice, persona, user)
     else:
         voice = await run_in_threadpool(tts.resolve_voice, row["persona"], reading["owner"])
+    # cached replays are free and never limit-checked
+    if not (tts.cache_dir() / f"{tts.cache_key(script, voice, cfg['model'])}.mp3").is_file():
+        await run_in_threadpool(limits.check_minutes, user)
     try:
-        path = await tts.get_or_generate(script, voice, cfg)
+        path = await tts.get_or_generate(
+            script, voice, cfg,
+            usage_meta={"owner": user, "kind": "speak", "reading_id": reading_id})
     except httpx.HTTPError as e:
         raise HTTPException(502, f"TTS endpoint error: {e}")
     return FileResponse(path, media_type="audio/mpeg", headers=AUDIO_CACHE)
@@ -944,11 +1018,14 @@ async def tts_speak(req: TtsRequest, user: User):
     which is never persisted. Cached like everything else, so replaying the
     same text is free."""
     cfg = _tts_config_or_409()
-    persona = req.persona or ("custom" if db.get_user_prompt(user) else interp.default_persona())
+    persona = req.persona or interp.default_persona()
     voice = await run_in_threadpool(tts.resolve_voice, persona, user)
     script = tts.build_script("Your reading.", req.text)
+    if not (tts.cache_dir() / f"{tts.cache_key(script, voice, cfg['model'])}.mp3").is_file():
+        await run_in_threadpool(limits.check_minutes, user)
     try:
-        path = await tts.get_or_generate(script, voice, cfg)
+        path = await tts.get_or_generate(script, voice, cfg,
+                                         usage_meta={"owner": user, "kind": "speak"})
     except httpx.HTTPError as e:
         raise HTTPException(502, f"TTS endpoint error: {e}")
     return FileResponse(path, media_type="audio/mpeg", headers=AUDIO_CACHE)

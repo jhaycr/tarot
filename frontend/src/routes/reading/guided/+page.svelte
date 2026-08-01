@@ -17,7 +17,7 @@
 	import Lightbox from '$lib/Lightbox.svelte';
 	import { toParagraphs } from '$lib/text';
 	import { readingStore } from '$lib/reading.svelte';
-	import { prefAutoRead, prefGuidedMode, prefPersona } from '$lib/prefs.svelte';
+	import { prefGuidedMode, prefPersona } from '$lib/prefs.svelte';
 
 	// A guided reading is a persisted, resumable resource. We arrive either with a
 	// fresh draw in the store (create it), or with ?id to resume a saved one.
@@ -30,7 +30,6 @@
 	const deckInfo = $derived(decks.find((d) => d.slug === reading?.deck) ?? null);
 	let personas = $state<Persona[]>([]);
 	let persona = $state<string | null>(null);
-	let hasCustom = $state(false);
 	let error = $state('');
 
 	// Per-card focused text + the comprehensive, streamed live and seeded from
@@ -48,7 +47,17 @@
 	// bind:this refs so auto-read can start a piece the moment it finishes streaming
 	let audioBtns = $state<(ReturnType<typeof AudioButton> | undefined)[]>([]);
 	let compBtn = $state<ReturnType<typeof AudioButton> | undefined>(undefined);
-	const autoRead = $derived(prefAutoRead.value === 'true');
+	// per-user server-side setting (follows the account across devices)
+	let autoRead = $state(false);
+
+	async function setAutoRead(v: boolean) {
+		autoRead = v;
+		try {
+			await api.setMySettings({ auto_read_audio: v });
+		} catch {
+			autoRead = !v; // revert on failure so the checkbox reflects reality
+		}
+	}
 
 	const cards = $derived(reading?.cards ?? []);
 	const allRevealed = $derived(cards.length > 0 && flipped.every(Boolean));
@@ -65,12 +74,13 @@
 	async function init() {
 		try {
 			api.decks().then((d) => (decks = d));
-			api.me().then((m) => (ttsEnabled = m.tts));
+			api.me().then((m) => {
+				ttsEnabled = m.tts;
+				autoRead = m.settings.auto_read_audio;
+			});
 			api.personas().then((p) => {
 				personas = p.personas;
-				hasCustom = p.has_custom;
-				const valid = [...p.personas.map((x) => x.slug), ...(p.has_custom ? ['custom'] : [])];
-				if (!valid.includes(prefPersona.value)) prefPersona.value = p.default;
+				if (!p.personas.some((x) => x.slug === prefPersona.value)) prefPersona.value = p.default;
 				persona = prefPersona.value;
 			});
 			cardMeta().then((m) => (meta = m));
@@ -233,14 +243,13 @@
 					{#each personas as p (p.slug)}
 						<option value={p.slug} title={p.description}>{p.name}</option>
 					{/each}
-					{#if hasCustom}<option value="custom">Custom</option>{/if}
 				</select>
 				{#if ttsEnabled}
-					<label class="autoread" title="Speak each reading aloud as it completes">
+					<label class="autoread" title="Speak each reading aloud as it completes (saved to your account)">
 						<input
 							type="checkbox"
 							checked={autoRead}
-							onchange={(e) => (prefAutoRead.value = String(e.currentTarget.checked))}
+							onchange={(e) => setAutoRead(e.currentTarget.checked)}
 						/>
 						🔊 Read aloud
 					</label>

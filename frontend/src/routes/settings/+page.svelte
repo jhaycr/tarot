@@ -1,13 +1,6 @@
 <script lang="ts">
-	import { api, type VoiceBlock } from '$lib/api';
+	import { api, type UsageSummary } from '$lib/api';
 
-	let prompt = $state('');
-	let personas = $state<Record<string, string>>({});
-	let saved = $state(true);
-	let expanded = $state<string | null>(null);
-	let customVoice = $state('');
-	let customSpeed = $state('');
-	let customInstructions = $state('');
 
 	let isAdmin = $state(false);
 	let llmBaseUrl = $state('');
@@ -39,20 +32,76 @@
 	const managed = (f: string) => llmManaged.includes(f);
 	const tmanaged = (f: string) => ttsManaged.includes(f);
 
+	let limReadings = $state('');
+	let limTokens = $state('');
+	let limMinutes = $state('');
+	let limManaged = $state<string[]>([]);
+	let limSaved = $state(true);
+	let limError = $state('');
+	const lmanaged = (f: string) => limManaged.includes(f);
+
+	async function refreshLimits() {
+		const s = await api.getLimitsSettings();
+		limReadings = s.readings_per_day != null ? String(s.readings_per_day) : '';
+		limTokens = s.llm_tokens_per_day != null ? String(s.llm_tokens_per_day) : '';
+		limMinutes = s.tts_minutes_per_day != null ? String(s.tts_minutes_per_day) : '';
+		limManaged = s.managed;
+		configFile = s.config_file;
+		configError = configError || s.config_error;
+	}
+
+	async function saveLimits() {
+		limError = '';
+		try {
+			// blank = disabled (sent as 0, stored as unset); managed fields not sent
+			const num = (v: string) => (v.trim() === '' ? 0 : Number(v));
+			await api.setLimitsSettings({
+				...(lmanaged('readings_per_day') ? {} : { readings_per_day: num(limReadings) }),
+				...(lmanaged('llm_tokens_per_day') ? {} : { llm_tokens_per_day: num(limTokens) }),
+				...(lmanaged('tts_minutes_per_day') ? {} : { tts_minutes_per_day: num(limMinutes) })
+			});
+			await refreshLimits();
+			limSaved = true;
+		} catch (e) {
+			limError = String(e);
+		}
+	}
+
+	let usage = $state<UsageSummary | null>(null);
+	let usageDays = $state(30);
+
+	async function loadUsage() {
+		usage = await api.adminUsage(usageDays);
+	}
+
+	const fmt = (n: number) => n.toLocaleString();
+	// OpenAI TTS returns ~128 kbps MP3 -> ~0.94 MB per audio-minute
+	const audioMinutes = (bytes: number) => (bytes / 983040).toFixed(1);
+
+	let autoRead = $state(false);
+	let autoReadError = $state('');
+
+	async function setAutoRead(v: boolean) {
+		autoRead = v;
+		autoReadError = '';
+		try {
+			await api.setMySettings({ auto_read_audio: v });
+		} catch {
+			autoRead = !v;
+			autoReadError = 'Could not save — try again.';
+		}
+	}
+
 	$effect(() => {
-		api.getPrompt().then((r) => {
-			prompt = r.prompt;
-			personas = r.personas;
-			customVoice = r.voice?.voice ?? '';
-			customSpeed = r.voice?.speed != null ? String(r.voice.speed) : '';
-			customInstructions = r.voice?.instructions ?? '';
-		});
 		api.me().then((m) => {
 			isAdmin = m.is_admin;
 			ttsEnabled = m.tts;
+			autoRead = m.settings.auto_read_audio;
 			if (m.is_admin) {
 				refreshLlm();
 				refreshTts();
+				refreshLimits();
+				loadUsage();
 				api.getReadingSettings().then((s) => {
 					reversalChance = s.reversal_chance;
 					reversalManaged = s.managed.includes('reversal_chance');
@@ -136,25 +185,30 @@
 		}
 	}
 
-	async function save() {
-		const voice: VoiceBlock = {
-			...(customVoice.trim() ? { voice: customVoice.trim() } : {}),
-			...(customSpeed.trim() ? { speed: Number(customSpeed) } : {}),
-			...(customInstructions.trim() ? { instructions: customInstructions.trim() } : {})
-		};
-		const r = await api.setPrompt(prompt, Object.keys(voice).length ? voice : null);
-		prompt = r.prompt;
-		saved = true;
-	}
-
-	async function clear() {
-		prompt = '';
-		customVoice = customSpeed = customInstructions = '';
-		await save();
-	}
 </script>
 
 <h1>Settings</h1>
+
+{#if ttsEnabled}
+	<section>
+		<h2>Reading audio</h2>
+		<label class="fld checkline">
+			<input type="checkbox" checked={autoRead} onchange={(e) => setAutoRead(e.currentTarget.checked)} />
+			<span>Read readings aloud automatically — each card's reading (and the whole picture)
+				starts speaking as it appears. Saved to your account, so it applies on every device.
+				You can also toggle this during a guided reading.</span>
+		</label>
+		{#if autoReadError}<p class="error">{autoReadError}</p>{/if}
+	</section>
+{/if}
+
+{#if !isAdmin}
+	<p class="dim">
+		Your deck, spread, reversal, and reader choices are remembered automatically as you use
+		them. Instance-wide settings (AI connection, voices, reversal chance) are managed by an
+		admin.
+	</p>
+{/if}
 
 {#if isAdmin}
 	<section>
@@ -275,60 +329,114 @@
 		{#if ttsError}<p class="error">{ttsError}</p>{/if}
 		<button onclick={saveTts} disabled={ttsSaved}>{ttsSaved ? 'Saved' : 'Save voice settings'}</button>
 	</section>
-{/if}
 
-<section>
-	<h2>Custom reader persona</h2>
-	<p class="dim">
-		Your own system prompt for AI interpretations. Leave empty to use the built-in
-		personas. When saved, it becomes the “Custom” option on the reading page and
-		your default reader.
-	</p>
-	<textarea
-		rows="12"
-		bind:value={prompt}
-		oninput={() => (saved = false)}
-		placeholder="You are …, a tarot reader who …"
-	></textarea>
-	{#if ttsEnabled && prompt}
-		<div class="customvoice">
-			<p class="dim">Your persona's voice (optional — defaults to the instance default):</p>
-			<div class="voicerow">
-				<label class="fld">
-					<span>Voice</span>
-					<input type="text" bind:value={customVoice} oninput={() => (saved = false)} placeholder="e.g. onyx" />
-				</label>
-				<label class="fld">
-					<span>Speed</span>
-					<input type="text" inputmode="decimal" bind:value={customSpeed} oninput={() => (saved = false)} placeholder="1.0" />
-				</label>
-			</div>
+	<section>
+		<h2>Daily limits <small class="dim">(admin)</small></h2>
+		<p class="dim">
+			Per-person daily caps that stop runaway AI spend. Blank = no cap. Admins are always
+			exempt. Blocked users see "resets at midnight"; drawing cards and the journal keep
+			working — only AI generation pauses. A cap can be passed slightly by one in-flight
+			call, never more.
+		</p>
+		<div class="voicerow">
 			<label class="fld">
-				<span>Style instructions (OpenAI only)</span>
-				<textarea rows="2" bind:value={customInstructions} oninput={() => (saved = false)} placeholder="How should your reader sound?"></textarea>
+				<span>Readings / day {#if lmanaged('readings_per_day')}<em class="dim">(managed)</em>{/if}</span>
+				<input type="text" inputmode="numeric" bind:value={limReadings} oninput={() => (limSaved = false)} disabled={lmanaged('readings_per_day')} placeholder="e.g. 10" />
+			</label>
+			<label class="fld">
+				<span>LLM tokens / day {#if lmanaged('llm_tokens_per_day')}<em class="dim">(managed)</em>{/if}</span>
+				<input type="text" inputmode="numeric" bind:value={limTokens} oninput={() => (limSaved = false)} disabled={lmanaged('llm_tokens_per_day')} placeholder="e.g. 150000" />
+			</label>
+			<label class="fld">
+				<span>Voice minutes / day {#if lmanaged('tts_minutes_per_day')}<em class="dim">(managed)</em>{/if}</span>
+				<input type="text" inputmode="decimal" bind:value={limMinutes} oninput={() => (limSaved = false)} disabled={lmanaged('tts_minutes_per_day')} placeholder="e.g. 30" />
 			</label>
 		</div>
-	{/if}
-	<div class="row">
-		<button onclick={save} disabled={saved}>{saved ? 'Saved' : 'Save persona'}</button>
-		{#if prompt}
-			<button onclick={clear}>Clear (use built-in)</button>
+		{#if limManaged.length}
+			<p class="managed">Partly managed by <code>{configFile}</code> — edit the config file rather than this page.</p>
 		{/if}
-	</div>
-</section>
+		{#if limError}<p class="error">{limError}</p>{/if}
+		{#if limManaged.length < 3}
+			<button onclick={saveLimits} disabled={limSaved}>{limSaved ? 'Saved' : 'Save limits'}</button>
+		{/if}
+	</section>
 
-<section>
-	<h2>Built-in personas</h2>
-	{#each Object.entries(personas) as [slug, text] (slug)}
-		<details open={expanded === slug} ontoggle={(e) => { if (e.currentTarget.open) expanded = slug; }}>
-			<summary>{slug}</summary>
-			<pre>{text}</pre>
-		</details>
-	{/each}
-	<p class="dim">
-		Tip: copy a built-in persona into the box above as a starting point for your own.
-	</p>
-</section>
+	<section>
+		<h2>AI usage <small class="dim">(admin)</small></h2>
+		<p class="dim">
+			One ledger row per paid provider call — cached audio replays and aborted
+			streams cost nothing and aren't counted. Token counts come from the
+			provider when it reports them.
+		</p>
+		<label class="fld daysfld">
+			<span>Period</span>
+			<select bind:value={usageDays} onchange={loadUsage}>
+				<option value={7}>Last 7 days</option>
+				<option value={30}>Last 30 days</option>
+				<option value={90}>Last 90 days</option>
+				<option value={365}>Last year</option>
+			</select>
+		</label>
+		{#if usage}
+			{#if !usage.by_model.length}
+				<p class="dim">No AI calls recorded in this period. (The ledger starts with this version — older readings predate it.)</p>
+			{:else}
+				<h3>By model</h3>
+				<div class="tablewrap">
+					<table>
+						<thead><tr><th>Component</th><th>Model</th><th>Calls</th><th>Prompt tok</th><th>Output tok</th><th>Audio</th></tr></thead>
+						<tbody>
+							{#each usage.by_model as m (m.component + m.model)}
+								<tr>
+									<td>{m.component === 'llm' ? 'LLM' : 'Voice'}</td>
+									<td><code>{m.model}</code></td>
+									<td>{fmt(m.calls)}</td>
+									<td>{m.component === 'llm' ? fmt(m.prompt_tokens) : '—'}</td>
+									<td>{m.component === 'llm' ? fmt(m.completion_tokens) : '—'}</td>
+									<td>{m.component === 'tts' ? `${audioMinutes(m.audio_bytes)} min · ${fmt(m.characters)} chars` : '—'}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+				<h3>By person</h3>
+				<div class="tablewrap">
+					<table>
+						<thead><tr><th>Person</th><th>Component</th><th>Calls</th><th>Tokens (in / out)</th><th>Audio</th></tr></thead>
+						<tbody>
+							{#each usage.by_user as r (r.owner + r.component)}
+								<tr>
+									<td>{r.owner}</td>
+									<td>{r.component === 'llm' ? 'LLM' : 'Voice'}</td>
+									<td>{fmt(r.calls)}</td>
+									<td>{r.component === 'llm' ? `${fmt(r.prompt_tokens)} / ${fmt(r.completion_tokens)}` : '—'}</td>
+									<td>{r.component === 'tts' ? `${audioMinutes(r.audio_bytes)} min` : '—'}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+				<h3>By day</h3>
+				<div class="tablewrap">
+					<table>
+						<thead><tr><th>Day</th><th>Calls</th><th>Tokens (in / out)</th><th>Audio</th></tr></thead>
+						<tbody>
+							{#each usage.daily as d (d.day)}
+								<tr>
+									<td>{d.day}</td>
+									<td>{fmt(d.calls)}</td>
+									<td>{fmt(d.prompt_tokens)} / {fmt(d.completion_tokens)}</td>
+									<td>{d.audio_bytes ? `${audioMinutes(d.audio_bytes)} min` : '—'}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
+		{/if}
+	</section>
+{/if}
+
 
 <style>
 	section {
@@ -340,32 +448,6 @@
 		width: 100%;
 		font-size: 0.9rem;
 		line-height: 1.5;
-	}
-
-	.row {
-		display: flex;
-		gap: 0.6rem;
-		margin-top: 0.6rem;
-	}
-
-	details {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		margin-bottom: 0.6rem;
-		padding: 0.5rem 0.9rem;
-	}
-
-	summary {
-		cursor: pointer;
-		color: var(--gold);
-		text-transform: capitalize;
-	}
-
-	pre {
-		white-space: pre-wrap;
-		font-family: inherit;
-		font-size: 0.85rem;
-		color: var(--text-dim);
 	}
 
 	.dim {
@@ -448,7 +530,51 @@
 		max-width: 8rem;
 	}
 
-	.customvoice {
-		margin-top: 0.8rem;
+	.daysfld select {
+		width: auto;
+	}
+
+	.checkline {
+		display: flex;
+		gap: 0.6rem;
+		align-items: flex-start;
+		cursor: pointer;
+	}
+
+	.checkline input {
+		margin-top: 0.25rem;
+		accent-color: var(--gold);
+	}
+
+	.tablewrap {
+		overflow-x: auto;
+	}
+
+	table {
+		border-collapse: collapse;
+		width: 100%;
+		font-size: 0.9rem;
+		font-variant-numeric: tabular-nums;
+	}
+
+	th,
+	td {
+		text-align: left;
+		padding: 0.35rem 0.9rem 0.35rem 0;
+		border-bottom: 1px solid var(--border);
+		white-space: nowrap;
+	}
+
+	th {
+		color: var(--text-dim);
+		font-weight: 600;
+		font-size: 0.78rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	section h3 {
+		font-size: 0.95rem;
+		margin: 1.1rem 0 0.4rem;
 	}
 </style>

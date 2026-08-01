@@ -174,6 +174,65 @@ export interface VoiceBlock {
 	instructions?: string;
 }
 
+/** Settings that follow the user across devices (unlike localStorage prefs). */
+export interface UserSettings {
+	auto_read_audio: boolean;
+}
+
+export interface LimitGauge {
+	used: number;
+	limit: number | null;
+}
+
+/** Daily spend caps. `{enabled: false}` alone when no cap is configured. */
+export interface LimitsStatus {
+	enabled: boolean;
+	exempt?: boolean;
+	readings?: LimitGauge;
+	tokens?: LimitGauge;
+	minutes?: LimitGauge;
+}
+
+export interface LimitsSettings {
+	readings_per_day: number | null;
+	llm_tokens_per_day: number | null;
+	tts_minutes_per_day: number | null;
+	managed: string[];
+	config_file: string | null;
+	config_error: string | null;
+}
+
+export interface UsageRow {
+	component: 'llm' | 'tts';
+	model: string;
+	calls: number;
+	prompt_tokens: number;
+	completion_tokens: number;
+	characters: number;
+	audio_bytes: number;
+}
+
+export interface UsageSummary {
+	days: number;
+	by_model: UsageRow[];
+	daily: {
+		day: string;
+		calls: number;
+		prompt_tokens: number;
+		completion_tokens: number;
+		tts_characters: number;
+		audio_bytes: number;
+	}[];
+	by_user: {
+		owner: string;
+		component: 'llm' | 'tts';
+		calls: number;
+		prompt_tokens: number;
+		completion_tokens: number;
+		audio_bytes: number;
+	}[];
+}
+
 export interface TtsSettings {
 	base_url: string;
 	model: string;
@@ -185,9 +244,21 @@ export interface TtsSettings {
 	config_error: string | null;
 }
 
+/** The server's human-readable `detail` when there is one ("Daily reading
+ * limit reached — resets at midnight."), else a terse status fallback. */
+async function errorFrom(res: Response, fallback: string): Promise<Error> {
+	try {
+		const detail = (await res.json())?.detail;
+		if (typeof detail === 'string' && detail) return new Error(detail);
+	} catch {
+		// non-JSON body — fall through
+	}
+	return new Error(fallback);
+}
+
 async function get<T>(url: string): Promise<T> {
 	const res = await fetch(url);
-	if (!res.ok) throw new Error(`${url}: ${res.status}`);
+	if (!res.ok) throw await errorFrom(res, `${url}: ${res.status}`);
 	return res.json();
 }
 
@@ -197,7 +268,7 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
 		headers: { 'content-type': 'application/json' },
 		body: body === undefined ? undefined : JSON.stringify(body)
 	});
-	if (!res.ok) throw new Error(`${method} ${url}: ${res.status}`);
+	if (!res.ok) throw await errorFrom(res, `${method} ${url}: ${res.status}`);
 	return res.json();
 }
 
@@ -220,7 +291,8 @@ export async function* streamSSE(
 		body: JSON.stringify(body),
 		signal
 	});
-	if (!res.ok || !res.body) throw new Error(`${url}: ${res.status}`);
+	if (!res.ok) throw await errorFrom(res, `${url}: ${res.status}`);
+	if (!res.body) throw new Error(`${url}: empty response`);
 	const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
 	let buf = '';
 	for (;;) {
@@ -249,6 +321,8 @@ export const api = {
 			display_name: string;
 			interpretation: boolean;
 			tts: boolean;
+			settings: UserSettings;
+			limits: LimitsStatus;
 			is_admin: boolean;
 			authenticated: boolean;
 			logout_url: string | null;
@@ -292,17 +366,16 @@ export const api = {
 			cards,
 			persona: persona || null
 		}),
-	personas: () =>
-		get<{ personas: Persona[]; has_custom: boolean; default: string }>('/api/personas'),
-	getPrompt: () =>
-		get<{ prompt: string; voice: VoiceBlock | null; personas: Record<string, string> }>(
-			'/api/settings/prompt'
-		),
-	setPrompt: (prompt: string, voice?: VoiceBlock | null) =>
-		send<{ prompt: string; voice: VoiceBlock | null }>('PUT', '/api/settings/prompt', {
-			prompt,
-			voice: voice ?? null
-		}),
+	personas: () => get<{ personas: Persona[]; default: string }>('/api/personas'),
+	getMySettings: () => get<UserSettings>('/api/settings/me'),
+	getLimitsSettings: () => get<LimitsSettings>('/api/settings/limits'),
+	setLimitsSettings: (s: {
+		readings_per_day?: number;
+		llm_tokens_per_day?: number;
+		tts_minutes_per_day?: number;
+	}) => send<LimitsSettings>('PUT', '/api/settings/limits', s),
+	setMySettings: (s: Partial<UserSettings>) => send<UserSettings>('PUT', '/api/settings/me', s),
+	adminUsage: (days: number) => get<UsageSummary>(`/api/admin/usage?days=${days}`),
 	getTtsSettings: () => get<TtsSettings>('/api/settings/tts'),
 	setTtsSettings: (s: {
 		base_url?: string;

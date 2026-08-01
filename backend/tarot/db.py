@@ -184,12 +184,65 @@ def _m5_tts(con: sqlite3.Connection) -> None:
     con.execute("ALTER TABLE user_prompts ADD COLUMN voice TEXT")
 
 
+def _m6_usage_and_user_settings(con: sqlite3.Connection) -> None:
+    """Per-user settings k/v (first user: auto_read_audio) and the AI usage
+    ledger — one row per paid provider call (LLM or TTS), no FK to readings
+    so the record outlives deletion."""
+    con.execute(
+        """
+        CREATE TABLE user_settings (
+            owner TEXT NOT NULL,
+            key   TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (owner, key)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE ai_usage (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                INTEGER NOT NULL,
+            owner             TEXT    NOT NULL,
+            component         TEXT    NOT NULL CHECK (component IN ('llm','tts')),
+            kind              TEXT    NOT NULL,  -- single|focused|comprehensive|speak
+            model             TEXT    NOT NULL,
+            reading_id        INTEGER,
+            prompt_tokens     INTEGER,
+            completion_tokens INTEGER,
+            characters        INTEGER,  -- llm: output chars (usage fallback); tts: input chars
+            audio_bytes       INTEGER
+        )
+        """
+    )
+    con.execute("CREATE INDEX idx_ai_usage_ts ON ai_usage(ts)")
+
+
+def _m7_reading_charges(con: sqlite3.Connection) -> None:
+    """Daily reading-limit charges. One row per (owner, day, fingerprint);
+    INSERT OR IGNORE makes charging idempotent, so resuming a guided reading
+    or re-interpreting the same quick draw never double-bills."""
+    con.execute(
+        """
+        CREATE TABLE reading_charges (
+            owner       TEXT NOT NULL,
+            day         TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            created_at  INTEGER NOT NULL,
+            PRIMARY KEY (owner, day, fingerprint)
+        )
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m1_user_registry),
     (2, _m2_reading_visibility),
     (3, _m3_publish_decks),
     (4, _m4_guided_interpretations),
     (5, _m5_tts),
+    (6, _m6_usage_and_user_settings),
+    (7, _m7_reading_charges),
 ]
 
 
@@ -552,49 +605,10 @@ def owned_reading_count(owner: str) -> int:
         ).fetchone()[0]
 
 
-def get_user_prompt(owner: str) -> str:
-    with connect() as con:
-        row = con.execute(
-            "SELECT system_prompt FROM user_prompts WHERE owner = ?", (owner,)
-        ).fetchone()
-        return row["system_prompt"] if row else ""
+# NOTE: the user_prompts table still exists (dormant) — the custom reader
+# persona and its accessors were removed deliberately: a user-supplied system
+# prompt is a prompt-injection surface. Personas are the fixed built-in triad.
 
-
-def set_user_prompt(owner: str, system_prompt: str) -> None:
-    with connect() as con:
-        if system_prompt.strip():
-            con.execute(
-                "INSERT INTO user_prompts (owner, system_prompt) VALUES (?, ?) "
-                "ON CONFLICT(owner) DO UPDATE SET system_prompt = excluded.system_prompt",
-                (owner, system_prompt),
-            )
-        else:
-            con.execute("DELETE FROM user_prompts WHERE owner = ?", (owner,))
-
-
-def get_user_voice(owner: str) -> dict | None:
-    """The custom persona's voice block, or None. Lives on the user_prompts
-    row, so it exists only while a custom prompt does."""
-    with connect() as con:
-        row = con.execute(
-            "SELECT voice FROM user_prompts WHERE owner = ?", (owner,)
-        ).fetchone()
-        if not row or not row["voice"]:
-            return None
-        try:
-            parsed = json.loads(row["voice"])
-            return parsed if isinstance(parsed, dict) else None
-        except ValueError:
-            return None
-
-
-def set_user_voice(owner: str, voice: dict | None) -> None:
-    """Attach a voice block to the user's custom prompt row (no-op without one)."""
-    with connect() as con:
-        con.execute(
-            "UPDATE user_prompts SET voice = ? WHERE owner = ?",
-            (json.dumps(voice) if voice else None, owner),
-        )
 
 
 def get_interpretation(reading_id: int, position: int) -> dict | None:
@@ -607,6 +621,139 @@ def get_interpretation(reading_id: int, position: int) -> dict | None:
             (reading_id, position),
         ).fetchone()
         return dict(row) if row else None
+
+
+def get_user_setting(owner: str, key: str, default: str = "") -> str:
+    with connect() as con:
+        row = con.execute(
+            "SELECT value FROM user_settings WHERE owner = ? AND key = ?", (owner, key)
+        ).fetchone()
+        return row["value"] if row else default
+
+
+def set_user_setting(owner: str, key: str, value: str) -> None:
+    with connect() as con:
+        con.execute(
+            "INSERT INTO user_settings (owner, key, value) VALUES (?,?,?)"
+            " ON CONFLICT(owner, key) DO UPDATE SET value = excluded.value",
+            (owner, key, value),
+        )
+
+
+def record_usage(
+    owner: str, component: str, kind: str, model: str,
+    reading_id: int | None = None,
+    prompt_tokens: int | None = None, completion_tokens: int | None = None,
+    characters: int | None = None, audio_bytes: int | None = None,
+) -> None:
+    with connect() as con:
+        con.execute(
+            "INSERT INTO ai_usage (ts, owner, component, kind, model, reading_id,"
+            " prompt_tokens, completion_tokens, characters, audio_bytes)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (int(time.time()), owner, component, kind, model, reading_id,
+             prompt_tokens, completion_tokens, characters, audio_bytes),
+        )
+
+
+def readings_charged(owner: str, day: str) -> int:
+    with connect() as con:
+        return con.execute(
+            "SELECT count(*) FROM reading_charges WHERE owner = ? AND day = ?",
+            (owner, day),
+        ).fetchone()[0]
+
+
+def try_charge_reading(owner: str, day: str, fingerprint: str, limit: float | None) -> bool:
+    """Charge idempotently; returns False only when the cap blocks a NEW charge.
+
+    Check and insert share one connection/transaction so two racing requests
+    can't both squeeze under the cap via separate counts.
+    """
+    with connect() as con:
+        seen = con.execute(
+            "SELECT 1 FROM reading_charges WHERE owner = ? AND day = ? AND fingerprint = ?",
+            (owner, day, fingerprint),
+        ).fetchone()
+        if seen:
+            return True
+        if limit is not None:
+            used = con.execute(
+                "SELECT count(*) FROM reading_charges WHERE owner = ? AND day = ?",
+                (owner, day),
+            ).fetchone()[0]
+            if used >= limit:
+                return False
+        con.execute(
+            "INSERT OR IGNORE INTO reading_charges (owner, day, fingerprint, created_at)"
+            " VALUES (?,?,?,?)",
+            (owner, day, fingerprint, int(time.time())),
+        )
+        return True
+
+
+def llm_tokens_since(owner: str, since_ts: int) -> int:
+    """Prompt+completion tokens today; calls whose provider omitted usage fall
+    back to output-chars/4 so nothing rides free."""
+    with connect() as con:
+        return int(con.execute(
+            "SELECT coalesce(sum(coalesce(prompt_tokens, 0)"
+            " + coalesce(completion_tokens, coalesce(characters, 0) / 4)), 0)"
+            " FROM ai_usage WHERE owner = ? AND component = 'llm' AND ts >= ?",
+            (owner, since_ts),
+        ).fetchone()[0])
+
+
+def tts_bytes_since(owner: str, since_ts: int) -> int:
+    with connect() as con:
+        return int(con.execute(
+            "SELECT coalesce(sum(audio_bytes), 0) FROM ai_usage"
+            " WHERE owner = ? AND component = 'tts' AND ts >= ?",
+            (owner, since_ts),
+        ).fetchone()[0])
+
+
+def usage_summary(days: int) -> dict:
+    """Aggregates for the admin usage page: totals per component+model, a
+    per-day series, and per-user totals, over the last `days` days."""
+    since = int(time.time()) - days * 86400
+    with connect() as con:
+        by_model = [
+            dict(r) for r in con.execute(
+                "SELECT component, model, count(*) AS calls,"
+                " coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
+                " coalesce(sum(completion_tokens),0) AS completion_tokens,"
+                " coalesce(sum(characters),0) AS characters,"
+                " coalesce(sum(audio_bytes),0) AS audio_bytes"
+                " FROM ai_usage WHERE ts >= ?"
+                " GROUP BY component, model ORDER BY component, calls DESC",
+                (since,),
+            )
+        ]
+        daily = [
+            dict(r) for r in con.execute(
+                "SELECT date(ts, 'unixepoch') AS day, count(*) AS calls,"
+                " coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
+                " coalesce(sum(completion_tokens),0) AS completion_tokens,"
+                " coalesce(sum(CASE WHEN component='tts' THEN characters END),0) AS tts_characters,"
+                " coalesce(sum(audio_bytes),0) AS audio_bytes"
+                " FROM ai_usage WHERE ts >= ?"
+                " GROUP BY day ORDER BY day DESC",
+                (since,),
+            )
+        ]
+        by_user = [
+            dict(r) for r in con.execute(
+                "SELECT owner, component, count(*) AS calls,"
+                " coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
+                " coalesce(sum(completion_tokens),0) AS completion_tokens,"
+                " coalesce(sum(audio_bytes),0) AS audio_bytes"
+                " FROM ai_usage WHERE ts >= ?"
+                " GROUP BY owner, component ORDER BY owner",
+                (since,),
+            )
+        ]
+    return {"days": days, "by_model": by_model, "daily": daily, "by_user": by_user}
 
 
 # --- TTS cache index (LRU; files live in /data/tts-cache) -------------------

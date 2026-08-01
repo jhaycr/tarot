@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { api, type DeckSummary, type Spread } from '$lib/api';
+	import { api, type DeckSummary, type LimitsStatus, type Spread } from '$lib/api';
 	import {
 		prefDeck,
 		prefSpread,
@@ -21,6 +21,12 @@
 	let showAllDecks = $state(false);
 	let llmEnabled = $state(false);
 	let guided = $state(false); // false = quick reading, true = guided walkthrough
+	let limitsStatus = $state<LimitsStatus>({ enabled: false });
+	const readingsLeft = $derived.by(() => {
+		const r = limitsStatus.readings;
+		if (!limitsStatus.enabled || limitsStatus.exempt || !r || r.limit == null) return null;
+		return { left: Math.max(0, r.limit - r.used), limit: r.limit };
+	});
 
 	function deckRank(d: DeckSummary): number {
 		if (favDecks.value.includes(d.slug)) return 0;
@@ -54,7 +60,13 @@
 	}
 
 	$effect(() => {
-		api.me().then((m) => (llmEnabled = m.interpretation)).catch(() => {});
+		api
+			.me()
+			.then((m) => {
+				llmEnabled = m.interpretation;
+				limitsStatus = m.limits;
+			})
+			.catch(() => {});
 		Promise.all([api.decks(), api.spreads()])
 			.then(([d, s]) => {
 				decks = d;
@@ -219,6 +231,16 @@
 	<button class="primary" onclick={draw} disabled={drawing || !selectedDeck}>
 		{drawing ? 'Shuffling…' : guided && llmEnabled ? 'Begin Guided Reading' : 'Draw the Cards'}
 	</button>
+
+	{#if readingsLeft}
+		<p class="quota" class:spent={readingsLeft.left === 0}>
+			{#if readingsLeft.left > 0}
+				{readingsLeft.left} of {readingsLeft.limit} readings left today
+			{:else}
+				Daily reading limit reached — you can still draw cards; AI readings resume at midnight
+			{/if}
+		</p>
+	{/if}
 </section>
 
 <style>
@@ -337,6 +359,17 @@
 	}
 
 	.error {
+		color: var(--danger);
+	}
+
+	.quota {
+		margin: -0.6rem 0 0;
+		text-align: center;
+		font-size: 0.85rem;
+		color: var(--text-dim);
+	}
+
+	.quota.spent {
 		color: var(--danger);
 	}
 

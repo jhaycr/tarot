@@ -17,6 +17,10 @@ additive.
       max_tokens: 900
     reading:
       reversal_chance: 25
+    limits:                     # per-user daily spend caps; omit/blank = no cap
+      readings_per_day: 10
+      llm_tokens_per_day: 150000
+      tts_minutes_per_day: 30
     interpretation:
       default_persona: alice
       system_prompt: |          # replaces the default persona's prompt

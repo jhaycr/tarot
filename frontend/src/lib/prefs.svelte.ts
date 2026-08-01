@@ -19,7 +19,8 @@ export const prefReversals = persisted('tarot.reversals', 'true');
 export const prefPersona = persisted('tarot.persona', 'alice');
 export const prefGuidedMode = persisted('tarot.guidedMode', 'isolated'); // isolated | cumulative
 export const prefJournalLayout = persisted('tarot.journalLayout', 'grid');
-export const prefAutoRead = persisted('tarot.autoRead', 'false'); // speak pieces as they complete
+// NOTE: auto-read audio is a per-user SERVER setting (/api/settings/me), not a
+// localStorage pref — it follows the account across devices.
 
 function persistedList(key: string): { value: string[] } {
 	let value = $state<string[]>(JSON.parse(localStorage.getItem(key) ?? '[]'));

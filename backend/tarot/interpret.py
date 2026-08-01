@@ -178,15 +178,16 @@ def config() -> dict | None:
     }
 
 
-def resolve_prompt(persona: str | None, custom_prompt: str) -> str:
-    """Pick the system prompt for a reading. Raises KeyError on unknown persona."""
-    if persona == "custom":
-        if not custom_prompt.strip():
-            raise ValueError("no custom persona prompt saved")
-        return custom_prompt
+def resolve_prompt(persona: str | None) -> str:
+    """Pick the system prompt for a reading. Raises KeyError on unknown persona.
+
+    Only the built-in triad is accepted — user-supplied system prompts were
+    removed deliberately (prompt-injection surface); "custom" is now an
+    unknown persona like any other.
+    """
     if persona:
         return PERSONAS[persona]["prompt"]
-    return custom_prompt.strip() or default_prompt()
+    return default_prompt()
 
 
 def describe_reading(question: str | None, spread_name: str, cards: list[dict]) -> str:
@@ -271,7 +272,7 @@ def describe_comprehensive(
 
 
 def _chat_body(system_prompt: str, user_content: str, cfg: dict, stream: bool,
-               max_tokens: int | None = None) -> dict:
+               max_tokens: int | None = None, include_usage: bool = False) -> dict:
     return {
         "model": cfg["model"],
         "messages": [
@@ -280,7 +281,32 @@ def _chat_body(system_prompt: str, user_content: str, cfg: dict, stream: bool,
         ],
         "max_tokens": max_tokens or cfg["max_tokens"],
         **({"stream": True} if stream else {}),
+        # ask the provider to append a usage chunk before [DONE]
+        **({"stream_options": {"include_usage": True}} if stream and include_usage else {}),
     }
+
+
+def _record_usage(usage_meta: dict | None, cfg: dict, usage: dict | None,
+                  output_chars: int) -> None:
+    """Best-effort usage ledger write; never let accounting break a reading."""
+    if not usage_meta:
+        return
+    from tarot import db
+
+    usage = usage or {}
+    try:
+        db.record_usage(
+            owner=usage_meta["owner"],
+            component="llm",
+            kind=usage_meta.get("kind", "single"),
+            model=cfg["model"],
+            reading_id=usage_meta.get("reading_id"),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            characters=output_chars,
+        )
+    except Exception:
+        pass
 
 
 def _auth_headers(cfg: dict) -> dict:
@@ -295,6 +321,7 @@ async def interpret(
     spread_name: str,
     cards: list[dict],
     system_prompt: str,
+    usage_meta: dict | None = None,
 ) -> str:
     cfg = config()
     if not cfg:
@@ -306,10 +333,15 @@ async def interpret(
             json=_chat_body(system_prompt, describe_reading(question, spread_name, cards), cfg, stream=False),
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
+        data = resp.json()
+        text = data["choices"][0]["message"]["content"].strip()
+        from starlette.concurrency import run_in_threadpool
+        await run_in_threadpool(_record_usage, usage_meta, cfg, data.get("usage"), len(text))
+        return text
 
 
-async def interpret_stream(system_prompt: str, user_content: str, max_tokens: int | None = None):
+async def interpret_stream(system_prompt: str, user_content: str, max_tokens: int | None = None,
+                           usage_meta: dict | None = None):
     """Yield text deltas from the LLM as they arrive (OpenAI-compatible SSE).
 
     `max_tokens` overrides the configured cap for this call (the comprehensive
@@ -317,32 +349,50 @@ async def interpret_stream(system_prompt: str, user_content: str, max_tokens: in
     Raises RuntimeError if unconfigured. `raise_for_status()` runs before the
     first yield, so a handshake failure (bad key/model) propagates synchronously
     and the route can still turn it into a real HTTP status.
+
+    With `usage_meta` ({owner, kind, reading_id?}), asks the provider for a
+    usage chunk (stream_options.include_usage) and writes the ledger row at
+    natural completion — an aborted stream records nothing (the token counts
+    never arrive). Providers that reject stream_options get one retry without.
     """
     cfg = config()
     if not cfg:
         raise RuntimeError("LLM interpretation is not configured")
+    usage: dict | None = None
+    output_chars = 0
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
-        async with client.stream(
-            "POST",
-            f"{cfg['base_url']}/chat/completions",
-            headers=_auth_headers(cfg),
-            json=_chat_body(system_prompt, user_content, cfg, stream=True, max_tokens=max_tokens),
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                line = line.strip()
-                if not line or line.startswith(":"):  # blank or SSE keepalive comment
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                data = line[len("data:"):].strip()
-                if data == "[DONE]":
-                    return
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                delta = (chunk.get("choices") or [{}])[0].get("delta", {})
-                text = delta.get("content")
-                if text:
-                    yield text
+        for include_usage in ([True, False] if usage_meta else [False]):
+            async with client.stream(
+                "POST",
+                f"{cfg['base_url']}/chat/completions",
+                headers=_auth_headers(cfg),
+                json=_chat_body(system_prompt, user_content, cfg, stream=True,
+                                max_tokens=max_tokens, include_usage=include_usage),
+            ) as resp:
+                if include_usage and resp.status_code in (400, 422):
+                    continue  # provider rejected stream_options — retry without
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or line.startswith(":"):  # blank or SSE keepalive comment
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+                    text = delta.get("content")
+                    if text:
+                        output_chars += len(text)
+                        yield text
+                break  # completed (or ran without usage support) — no retry
+    if usage_meta:
+        from starlette.concurrency import run_in_threadpool
+        await run_in_threadpool(_record_usage, usage_meta, cfg, usage, output_chars)

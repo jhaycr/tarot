@@ -12,12 +12,38 @@
 	// extras just carry their display name.
 	let zoomed = $state<{ index: number; canonical: string } | null>(null);
 	let deleting = $state(false);
+	let unpublishing = $state(false);
 	let deleteError = $state('');
 
 	$effect(() => {
 		api.cards().then((c) => (cards = c));
-		api.decks().then((d) => (deck = d.find((x) => x.slug === slug)));
+		refreshDeck();
 	});
+
+	async function refreshDeck() {
+		const d = await api.decks();
+		deck = d.find((x) => x.slug === slug);
+	}
+
+	async function unpublish() {
+		if (!deck || unpublishing) return;
+		if (
+			!confirm(
+				`Remove “${deck.name}” from the shared library? It returns to ${deck.published_by ?? 'the publisher'}'s private drafts — nobody else will see it.`
+			)
+		)
+			return;
+		unpublishing = true;
+		deleteError = '';
+		try {
+			await api.unpublishDeck(slug);
+			await refreshDeck(); // now a draft — the Delete button takes over
+		} catch {
+			deleteError = 'Could not unpublish the deck.';
+		} finally {
+			unpublishing = false;
+		}
+	}
 
 	async function remove() {
 		if (!deck || deleting) return;
@@ -157,6 +183,11 @@
 	</div>
 	<div class="topactions">
 		<a class="export" href="/api/decks/{slug}/export" download="{slug}.zip">⇩ Export zip</a>
+		{#if deck?.can_unpublish}
+			<button onclick={unpublish} disabled={unpublishing}>
+				{unpublishing ? 'Unpublishing…' : 'Unpublish'}
+			</button>
+		{/if}
 		{#if deck?.yours}
 			<button class="danger" onclick={remove} disabled={deleting}>
 				{deleting ? 'Deleting…' : 'Delete deck'}
