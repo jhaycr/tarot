@@ -182,7 +182,13 @@
 
 {#snippet deckCard(deck: DeckSummary)}
 	<a class="deck" href="/decks/{deck.slug}">
-		<img src={api.cardImage(deck.slug, 0)} alt="{deck.name} — The Fool" loading="lazy" />
+		<img
+			src={deck.tile_cover && deck.has_cover
+				? api.coverImage(deck.slug)
+				: api.cardImage(deck.slug, 0)}
+			alt={deck.tile_cover && deck.has_cover ? `${deck.name} — box cover` : `${deck.name} — The Fool`}
+			loading="lazy"
+		/>
 		<strong>{deck.name}</strong>
 		<small>
 			{deckLabel(deck)}
@@ -197,13 +203,13 @@
 {/snippet}
 
 {#if myDrafts.length}
-	<h2 class="section">Your drafts <span class="dim">· private until you publish</span></h2>
+	<h2 class="section">Drafts <span class="dim">· private until you publish</span></h2>
 	<div class="grid">
 		{#each myDrafts as deck (deck.slug)}{@render deckCard(deck)}{/each}
 	</div>
 {/if}
 
-<h2 class="section">Shared library</h2>
+<h2 class="section">Shared</h2>
 <div class="grid">
 	{#each library as deck (deck.slug)}{@render deckCard(deck)}{/each}
 </div>

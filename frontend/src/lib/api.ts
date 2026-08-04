@@ -38,6 +38,50 @@ export interface DeckSummary {
 	published_by: string | null;
 	yours: boolean;
 	can_unpublish: boolean;
+	/** Deck-curated companion book slugs (only the deck's owner edits). */
+	books: string[];
+	/** Gallery tile shows the box cover instead of card 0. */
+	tile_cover: boolean;
+	can_edit_books: boolean;
+	/** Title-match suggestions; only populated for the deck's controller. */
+	suggested_books: string[];
+}
+
+export interface BookSummary {
+	slug: string;
+	name: string;
+	author: string | null;
+	tier: 'library' | 'staging';
+	published: boolean;
+	published_by: string | null;
+	yours: boolean;
+	can_unpublish: boolean;
+	pages: number;
+	cards_covered: number;
+	chunk_count: number;
+	llm_assisted: boolean;
+	card_pages: Record<string, number>;
+}
+
+export interface BookImportJob {
+	slug: string;
+	name: string;
+	stage: string;
+	page: number;
+	pages: number;
+	cards_covered: number;
+	llm_assisted: boolean;
+	failed_pages: number[];
+	done: boolean;
+	error: string | null;
+}
+
+export interface BookPassage {
+	heading: string | null;
+	orientation: 'upright' | 'reversed' | null;
+	pages: number[];
+	sections: Record<string, string> | null;
+	text: string;
 }
 
 export interface SpreadPosition {
@@ -104,6 +148,7 @@ export interface SavedReading extends Reading {
 	owner: string;
 	created_at: number;
 	notes: string;
+	books: string[];
 	visibility: Visibility;
 	/** Who it's shared with. Only ever populated for readings you own. */
 	shared_with: string[];
@@ -177,6 +222,9 @@ export interface VoiceBlock {
 /** Settings that follow the user across devices (unlike localStorage prefs). */
 export interface UserSettings {
 	auto_read_audio: boolean;
+	/** Hide your own draft (unpublished) decks from the reading picker. */
+	hide_draft_decks: boolean;
+	default_books: string[];
 }
 
 export interface LimitGauge {
@@ -353,18 +401,45 @@ export const api = {
 			error: string | null;
 			total: number;
 		}>(`/api/decks/download/${job}`),
+	books: () => get<BookSummary[]>('/api/books'),
+	uploadBook: async (file: File, name: string) => {
+		const form = new FormData();
+		form.append('file', file);
+		form.append('name', name);
+		const res = await fetch('/api/books/upload', { method: 'POST', body: form });
+		if (!res.ok) throw new Error((await res.json()).detail ?? `upload failed: ${res.status}`);
+		return res.json() as Promise<{ job: string; slug: string }>;
+	},
+	bookImportStatus: (job: string) => get<BookImportJob>(`/api/books/import/${job}`),
+	reextractBook: (slug: string) =>
+		send<{ job: string; slug: string }>('POST', `/api/books/${slug}/reextract`),
+	patchBook: (slug: string, patch: { name?: string; author?: string; license?: string }) =>
+		send<BookSummary>('PATCH', `/api/books/${slug}`, patch),
+	patchDeck: (slug: string, patch: { tile_cover?: boolean }) =>
+		send<{ slug: string; tile_cover: boolean }>('PATCH', `/api/decks/${slug}`, patch),
+	setDeckBooks: (slug: string, books: string[]) =>
+		send<{ slug: string; books: string[] }>('PUT', `/api/decks/${slug}/books`, { books }),
+	publishBook: (slug: string) => send<BookSummary>('POST', `/api/books/${slug}/publish`),
+	unpublishBook: (slug: string) => send<BookSummary>('POST', `/api/books/${slug}/unpublish`),
+	deleteBook: (slug: string) => send<{ deleted: string }>('DELETE', `/api/books/${slug}`),
+	bookPassages: (index: number, books: string[]) =>
+		get<{ books: { slug: string; name: string; passages: BookPassage[] }[] }>(
+			`/api/books/passages/${index}?books=${encodeURIComponent(books.join(','))}`
+		),
+	bookPageUrl: (slug: string, n: number) => `/api/books/${slug}/pages/${n}`,
 	getReadingSettings: () => get<ReadingSettings>('/api/settings/reading'),
 	setReadingSettings: (s: { reversal_chance: number }) =>
 		send<ReadingSettings>('PUT', '/api/settings/reading', s),
 	getLlmSettings: () => get<LlmSettings>('/api/settings/llm'),
 	setLlmSettings: (s: { base_url?: string; model?: string; api_key?: string }) =>
 		send<LlmSettings>('PUT', '/api/settings/llm', s),
-	interpret: (question: string | null, spread: string, cards: DrawnCard[], persona?: string) =>
+	interpret: (question: string | null, spread: string, cards: DrawnCard[], persona?: string, books: string[] = []) =>
 		send<{ interpretation: string }>('POST', '/api/interpret', {
 			question,
 			spread,
 			cards,
-			persona: persona || null
+			persona: persona || null,
+			books
 		}),
 	personas: () => get<{ personas: Persona[]; default: string }>('/api/personas'),
 	getMySettings: () => get<UserSettings>('/api/settings/me'),
@@ -416,11 +491,11 @@ export const api = {
 	reading: (id: number) => get<SavedReading>(`/api/readings/${id}`),
 	createGuidedReading: (r: Reading & { mode: InterpretationMode; notes?: string }) =>
 		send<SavedReading>('POST', '/api/readings/guided', r),
-	streamFocused: (id: number, position: number, persona: string | null, signal: AbortSignal) =>
-		streamSSE(`/api/readings/${id}/interpret/focused/${position}`, { persona }, signal),
-	streamComprehensive: (id: number, persona: string | null, signal: AbortSignal) =>
-		streamSSE(`/api/readings/${id}/interpret/comprehensive`, { persona }, signal),
-	saveReading: (r: Reading & { notes?: string }) => send<SavedReading>('POST', '/api/readings', r),
+	streamFocused: (id: number, position: number, persona: string | null, signal: AbortSignal, books: string[] = []) =>
+		streamSSE(`/api/readings/${id}/interpret/focused/${position}`, { persona, books }, signal),
+	streamComprehensive: (id: number, persona: string | null, signal: AbortSignal, books: string[] = []) =>
+		streamSSE(`/api/readings/${id}/interpret/comprehensive`, { persona, books }, signal),
+	saveReading: (r: Reading & { notes?: string; books?: string[] }) => send<SavedReading>('POST', '/api/readings', r),
 	updateReading: (id: number, patch: { notes?: string }) =>
 		send<SavedReading>('PATCH', `/api/readings/${id}`, patch),
 	users: () => get<Person[]>('/api/users'),

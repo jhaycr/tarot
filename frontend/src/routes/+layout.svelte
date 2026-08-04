@@ -23,6 +23,7 @@
 	const links = [
 		{ href: '/', label: 'Reading' },
 		{ href: '/decks', label: 'Decks' },
+		{ href: '/books', label: 'Books' },
 		{ href: '/journal', label: 'Journal' },
 		{ href: '/settings', label: 'Settings' }
 	];

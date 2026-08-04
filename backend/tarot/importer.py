@@ -26,7 +26,7 @@ MAJOR_ALIASES = {
     "hermit": 9, "hermite": 9,
     "wheeloffortune": 10, "fortune": 10, "wheel": 10,
     "justice": 11,
-    "hangedman": 12, "hanged": 12,
+    "hangedman": 12, "hanged": 12, "hangedwoman": 12, "hangedone": 12,
     "death": 13,
     "temperance": 14,
     "devil": 15,
@@ -102,6 +102,81 @@ def classify(stem: str) -> int | str | None:
         if 0 <= n <= 77:
             return n
     return None
+
+
+# --- guidebook heading matching (additive; classify() above is untouched) ---
+
+_ROMAN = {
+    "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7,
+    "viii": 8, "ix": 9, "x": 10, "xi": 11, "xii": 12, "xiii": 13,
+    "xiv": 14, "xv": 15, "xvi": 16, "xvii": 17, "xviii": 18, "xix": 19,
+    "xx": 20, "xxi": 21,
+}
+
+# prose-flavored noise seen in guidebook headings, on top of NOISE_TOKENS
+HEADING_NOISE = {
+    "meaning", "meanings", "divinatory", "upright", "reversed", "keywords",
+    "keyword", "chapter", "arcanum", "description", "interpretation", "and",
+}
+
+
+def _roman_to_int(token: str) -> int | None:
+    if token == "0" or token == "zero":
+        return 0
+    return _ROMAN.get(token)
+
+
+def classify_heading(text: str) -> tuple[int | None, float]:
+    """Match a guidebook heading to a canonical card index, with confidence.
+
+    Unlike classify(), numbers alone are never trusted for majors (a
+    Marseilles book numbers Justice VIII) — a roman/arabic numeral only
+    raises confidence when it AGREES with a name match, and scores low on
+    its own. Returns (index | None, confidence 0.0-1.0).
+    """
+    tokens = _tokens(text)
+    roman = next((r for t in tokens if (r := _roman_to_int(t)) is not None), None)
+    alpha = [t for t in tokens if t.isalpha()
+             and t not in NOISE_TOKENS and t not in HEADING_NOISE
+             and _roman_to_int(t) is None]
+
+    # minors: suit + rank (named or spelled/numeric)
+    suit = next((SUIT_ALIASES[t] for t in alpha if t in SUIT_ALIASES), None)
+    if suit is not None:
+        rank = next((RANK_ALIASES[t] for t in alpha if t in RANK_ALIASES), None)
+        if rank is None:
+            words = {"ace": 1, "one": 1, "two": 2, "three": 3, "four": 4,
+                     "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+            n = next((words[t] for t in alpha if t in words), None)
+            if n is None:
+                n = next((int(t) for t in tokens if t.isdigit() and 1 <= int(t) <= 10), None)
+            if n is not None:
+                rank = n - 1
+        if rank is not None:
+            return 22 + suit * 14 + rank, 1.0
+
+    joined = "".join(alpha)
+    named = MAJOR_ALIASES.get(joined)
+    exact = named is not None
+    if named is None and alpha:
+        # every token names the same major ("Wheel of Fortune" -> wheel+fortune)
+        per_token = {MAJOR_ALIASES[t] for t in alpha if t in MAJOR_ALIASES}
+        if per_token and all(t in MAJOR_ALIASES for t in alpha) and len(per_token) == 1:
+            named, exact = per_token.pop(), True
+        elif per_token:
+            named = next(MAJOR_ALIASES[t] for t in alpha if t in MAJOR_ALIASES)
+    if named is not None:
+        if roman is not None and exact:
+            # number agreeing with a CLEAN name heading confirms; disagreeing
+            # (Marseilles order, decorative numbering) never overrides the name
+            return named, 0.9 if roman == named else 0.8
+        # exact heading = certain; name embedded in longer prose = weaker —
+        # and a roman numeral inside prose ("Numerology Links: XII, The
+        # Hanged Man") must NOT promote a cross-reference to section rank
+        return named, 1.0 if exact else 0.5
+    if roman is not None and not alpha:
+        return roman, 0.4  # bare numeral — plausible but unconfirmed
+    return None, 0.0
 
 
 def map_filenames(stems: list[str]) -> tuple[dict[int, str], str | None, str | None, list[str]]:

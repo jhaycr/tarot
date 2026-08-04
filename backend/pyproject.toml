@@ -12,11 +12,12 @@ dependencies = [
     "pillow>=10.0",
     "cryptography>=42.0",
     "python-multipart>=0.0.9",
+    "pypdfium2>=4",  # guidebook import (text + page rendering); slicer PDFs
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-slice = ["numpy>=1.24", "pypdfium2>=4"]  # tarot-slice only; kept out of the runtime image
+slice = ["numpy>=1.24"]  # tarot-slice image strategies only; kept out of the runtime image
 
 [project.scripts]
 tarot-dl = "tarot.downloader.cli:main"

@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { tick } from 'svelte';
-	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type Persona } from '$lib/api';
+	import { api, cardMeta, deckCardName, type BookSummary, type Card as CardType, type DeckSummary, type DrawnCard, type Persona } from '$lib/api';
 	import { prefPersona } from '$lib/prefs.svelte';
 	import AudioButton from '$lib/AudioButton.svelte';
+	import BookPicker from '$lib/BookPicker.svelte';
 	import Card from '$lib/Card.svelte';
 	import Lightbox from '$lib/Lightbox.svelte';
 	import { readingStore } from '$lib/reading.svelte';
@@ -27,16 +28,46 @@
 	let interpAudio = $state<ReturnType<typeof AudioButton> | undefined>(undefined);
 	// the persona that produced the current interpretation, so the voice matches
 	let interpretedWith = $state<string | null>(null);
+	// the book set the interpretation was actually generated with — provenance
+	// records THIS at save, not whatever the picker holds later
+	let interpretedBooks = $state<string[]>([]);
+	// Guidebooks informing this reading: the deck's companions, else the
+	// user's default set.
+	let allBooks = $state<BookSummary[]>([]);
+	let books = $state<string[]>([]);
+	let defaultBooks: string[] = [];
+	let booksLoaded = false, meLoaded = false, decksLoaded = false, booksSeeded = false;
+
+	function seedBooks() {
+		if (booksSeeded || !reading || !booksLoaded || !meLoaded || !decksLoaded) return;
+		booksSeeded = true;
+		const visible = new Set(allBooks.map((b) => b.slug));
+		const deckBooks = decks.find((d) => d.slug === reading!.deck)?.books ?? [];
+		const companions = deckBooks.filter((s) => visible.has(s));
+		books = companions.length ? companions : defaultBooks.filter((s) => visible.has(s));
+	}
 
 	$effect(() => {
 		if (!reading) goto('/');
 		else {
-			api.decks().then((d) => (decks = d));
+			api.decks().then((d) => {
+				decks = d;
+				decksLoaded = true;
+				seedBooks();
+			});
 			cardMeta().then((c) => (meta = c));
+			api.books().then((b) => {
+				allBooks = b;
+				booksLoaded = true;
+				seedBooks();
+			});
 			api.me().then((m) => {
 				llmEnabled = m.interpretation;
 				ttsEnabled = m.tts;
 				autoRead = m.settings.auto_read_audio;
+				defaultBooks = m.settings.default_books;
+				meLoaded = true;
+				seedBooks();
 				if (m.interpretation) {
 					api.personas().then((p) => {
 						personas = p.personas;
@@ -49,6 +80,13 @@
 	});
 
 	const deckInfo = $derived(decks.find((d) => d.slug === reading?.deck));
+	// Infobox excerpts: the deck's curated companions ALWAYS show for its
+	// cards, plus whatever the querent explicitly selected for the reading.
+	const infoboxBooks = $derived.by(() => {
+		const visible = new Set(allBooks.map((b) => b.slug));
+		const curated = (deckInfo?.books ?? []).filter((s) => visible.has(s));
+		return [...new Set([...curated, ...books])];
+	});
 	const allFlipped = $derived(flips.every(Boolean));
 	const nextIdx = $derived(flips.indexOf(false));
 	const cols = $derived(reading ? Math.max(...reading.cards.map((c) => c.position.col)) : 1);
@@ -94,7 +132,11 @@
 		saving = true;
 		try {
 			const notes = interpretation ? `AI interpretation:\n${interpretation}` : '';
-			const saved = await api.saveReading({ ...reading, notes });
+			const saved = await api.saveReading({
+				...reading,
+				notes,
+				books: interpretation ? interpretedBooks : []
+			});
 			savedId = saved.id;
 		} finally {
 			saving = false;
@@ -106,9 +148,10 @@
 		interpreting = true;
 		interpretError = '';
 		try {
-			const res = await api.interpret(reading.question, reading.spread, reading.cards, prefPersona.value);
+			const res = await api.interpret(reading.question, reading.spread, reading.cards, prefPersona.value, books);
 			interpretation = res.interpretation;
 			interpretedWith = prefPersona.value;
+			interpretedBooks = [...books];
 			if (autoRead) {
 				await tick(); // the button mounts with the interpretation
 				interpAudio?.play();
@@ -196,7 +239,8 @@
 					{/each}
 				{:else}
 					<div class="ask">
-						<select bind:value={prefPersona.value} aria-label="Reader persona">
+						<BookPicker available={allBooks} bind:selected={books} />
+					<select bind:value={prefPersona.value} aria-label="Reader persona">
 							{#each personas as p (p.slug)}
 								<option value={p.slug} title={p.description}>{p.name}</option>
 							{/each}
@@ -220,6 +264,7 @@
 				renames={deckInfo}
 				onclose={() => (zoomedIdx = null)}
 				onnav={nav}
+				books={infoboxBooks}
 			/>
 		{/key}
 	{/if}

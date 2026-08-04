@@ -190,15 +190,33 @@ def resolve_prompt(persona: str | None) -> str:
     return default_prompt()
 
 
-def describe_reading(question: str | None, spread_name: str, cards: list[dict]) -> str:
+BOOK_GUIDANCE = (
+    "Passages marked 'from <book>' are excerpts from the querent's chosen "
+    "guidebooks — weigh them alongside your own knowledge of the cards, in "
+    "your own voice."
+)
+
+
+def _book_lines(passages: dict[str, str] | None) -> list[str]:
+    """Per-card guidebook excerpts in the indented-continuation grammar."""
+    if not passages:
+        return []
+    return [f"    from {title}: {text}" for title, text in passages.items()]
+
+
+def describe_reading(question: str | None, spread_name: str, cards: list[dict],
+                     passages_by_position: dict[int, dict[str, str]] | None = None) -> str:
     lines = [f"Spread: {spread_name}"]
     if question:
         lines.append(f"Question: {question}")
     lines.append("Cards:")
-    for c in cards:
+    for i, c in enumerate(cards):
         pos = c["position"]
         name = c["card"]["name"] + (" (reversed)" if c.get("reversed") else "")
         lines.append(f"- {pos['name']} ({pos.get('meaning', '')}): {name}")
+        lines.extend(_book_lines((passages_by_position or {}).get(i)))
+    if passages_by_position:
+        lines.append("\n" + BOOK_GUIDANCE)
     return "\n".join(lines)
 
 
@@ -213,6 +231,7 @@ def describe_card(
     spread_name: str,
     card: dict,
     prior: list[tuple[dict, str | None]] | None = None,
+    passages: dict[str, str] | None = None,
 ) -> str:
     """User message for one card's focused reading (guided flow).
 
@@ -231,6 +250,7 @@ def describe_card(
                 lines.append(f"    reading so far: {ptext}")
     lines.append("\nFocus on this card in its position:")
     lines.append(_card_line(card))
+    lines.extend(_book_lines(passages))
     lines.append(
         "\nGive a focused reading of just this card"
         + (", developing it in light of the cards already revealed."
@@ -240,6 +260,7 @@ def describe_card(
         "brief questions for reflection. Plain prose only: no headings, no section "
         "titles, no bold, and no bulleted or numbered lists — write the questions "
         "as plain sentences."
+        + (" " + BOOK_GUIDANCE if passages else "")
     )
     return "\n".join(lines)
 
@@ -249,6 +270,7 @@ def describe_comprehensive(
     spread_name: str,
     cards: list[dict],
     focused_by_position: dict[int, str],
+    passages_by_position: dict[int, dict[str, str]] | None = None,
 ) -> str:
     """User message for the whole-spread synthesis. Ingests the per-card focused
     readings (a firm requirement — the comprehensive builds on them)."""
@@ -261,12 +283,14 @@ def describe_comprehensive(
         text = focused_by_position.get(i)
         if text:
             lines.append(f"    focused reading: {text}")
+        lines.extend(_book_lines((passages_by_position or {}).get(i)))
     lines.append(
         "\nNow give a comprehensive reading that ties the whole spread together, "
         "building on the focused readings above and how the cards relate. Write it "
         "as flowing paragraphs of plain prose — no headings, section titles, bold, "
         "or bulleted/numbered lists. It can be a little fuller than the per-card "
         "readings, but stay focused and readable."
+        + (" " + BOOK_GUIDANCE if passages_by_position else "")
     )
     return "\n".join(lines)
 
@@ -322,6 +346,7 @@ async def interpret(
     cards: list[dict],
     system_prompt: str,
     usage_meta: dict | None = None,
+    passages_by_position: dict[int, dict[str, str]] | None = None,
 ) -> str:
     cfg = config()
     if not cfg:
@@ -330,7 +355,10 @@ async def interpret(
         resp = await client.post(
             f"{cfg['base_url']}/chat/completions",
             headers=_auth_headers(cfg),
-            json=_chat_body(system_prompt, describe_reading(question, spread_name, cards), cfg, stream=False),
+            json=_chat_body(system_prompt,
+                            describe_reading(question, spread_name, cards,
+                                             passages_by_position=passages_by_position),
+                            cfg, stream=False),
         )
         resp.raise_for_status()
         data = resp.json()

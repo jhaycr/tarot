@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api, deckCardName, type Card, type DeckSummary } from '$lib/api';
+	import { api, deckCardName, type BookSummary, type Card, type DeckSummary } from '$lib/api';
 	import Lightbox from '$lib/Lightbox.svelte';
 
 	const slug = $derived(page.params.slug!);
@@ -15,10 +15,40 @@
 	let unpublishing = $state(false);
 	let deleteError = $state('');
 
+	let allBooks = $state<BookSummary[]>([]);
+	const companionBooks = $derived(
+		(deck?.books ?? [])
+			.map((s) => allBooks.find((b) => b.slug === s))
+			.filter((b): b is BookSummary => !!b)
+	);
+	const companionSlugs = $derived(companionBooks.map((b) => b.slug));
+
 	$effect(() => {
 		api.cards().then((c) => (cards = c));
+		api.books().then((b) => (allBooks = b));
 		refreshDeck();
 	});
+
+	let bookError = $state('');
+
+	async function setBooks(next: string[]) {
+		if (!deck) return;
+		bookError = '';
+		try {
+			await api.setDeckBooks(slug, next);
+			await refreshDeck();
+		} catch (e) {
+			bookError = e instanceof Error ? e.message : 'Could not update companion books.';
+		}
+	}
+
+	function toggleBook(bookSlug: string) {
+		if (!deck) return;
+		const next = deck.books.includes(bookSlug)
+			? deck.books.filter((s) => s !== bookSlug)
+			: [...deck.books, bookSlug];
+		setBooks(next);
+	}
 
 	async function refreshDeck() {
 		const d = await api.decks();
@@ -180,6 +210,63 @@
 				{/if}
 			</p>
 		{/if}
+		{#if companionBooks.length}
+			<p class="dim companions">
+				📖 Companion {companionBooks.length === 1 ? 'book' : 'books'}:
+				{#each companionBooks as b, i (b.slug)}
+					{#if i > 0}·{/if}
+					<a href="/books/{b.slug}">{b.name}</a>
+				{/each}
+			</p>
+		{/if}
+		{#if deck?.can_edit_books && deck?.has_cover}
+			<label class="tilecover dim">
+				<input
+					type="checkbox"
+					checked={deck.tile_cover}
+					onchange={async (e) => {
+						try {
+							await api.patchDeck(slug, { tile_cover: e.currentTarget.checked });
+							await refreshDeck();
+						} catch {
+							bookError = 'Could not update the tile setting.';
+						}
+					}}
+				/>
+				Show the box cover as this deck's tile on the Decks page
+			</label>
+		{/if}
+		{#if deck?.can_edit_books}
+			<details class="curate">
+				<summary>Curate companion books</summary>
+				<div class="curatebody">
+					{#if deck.suggested_books.length}
+						<div class="suggest">
+							<span class="dim">Suggested:</span>
+							{#each deck.suggested_books as s (s)}
+								<button class="chip" onclick={() => toggleBook(s)}>
+									+ {allBooks.find((b) => b.slug === s)?.name ?? s}
+								</button>
+							{/each}
+						</div>
+					{/if}
+					{#each allBooks as b (b.slug)}
+						<label>
+							<input
+								type="checkbox"
+								checked={deck.books.includes(b.slug)}
+								onchange={() => toggleBook(b.slug)}
+							/>
+							{b.name}
+							<small class="dim">{b.cards_covered}/78</small>
+						</label>
+					{:else}
+						<span class="dim">No books imported yet — add one on the Books page.</span>
+					{/each}
+					{#if bookError}<p class="error">{bookError}</p>{/if}
+				</div>
+			</details>
+		{/if}
 	</div>
 	<div class="topactions">
 		<a class="export" href="/api/decks/{slug}/export" download="{slug}.zip">⇩ Export zip</a>
@@ -233,11 +320,61 @@
 			src={zoomed.index < 0 ? tileSrc(zoomed.index) : undefined}
 			onclose={() => (zoomed = null)}
 			onnav={nav}
+			books={companionSlugs}
 		/>
 	{/key}
 {/if}
 
 <style>
+	.tilecover {
+		display: flex;
+		gap: 0.4rem;
+		align-items: center;
+		font-size: 0.85rem;
+		margin-top: 0.3rem;
+	}
+
+	.curate {
+		margin-top: 0.4rem;
+	}
+
+	.curate summary {
+		cursor: pointer;
+		font-size: 0.85rem;
+		color: var(--accent);
+	}
+
+	.curatebody {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		padding: 0.5rem 0;
+		font-size: 0.85rem;
+	}
+
+	.curatebody label {
+		display: flex;
+		gap: 0.4rem;
+		align-items: center;
+	}
+
+	.suggest {
+		display: flex;
+		gap: 0.35rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+
+	.chip {
+		font-size: 0.75rem;
+		padding: 0.2rem 0.55rem;
+		border-radius: 999px;
+		border: 1px solid var(--accent);
+		color: var(--accent);
+		background: none;
+		cursor: pointer;
+	}
+
 	.top {
 		display: flex;
 		justify-content: space-between;

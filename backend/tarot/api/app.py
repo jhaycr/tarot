@@ -20,7 +20,9 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import config as cfgfile, crypto, db, dedupe, importer, interpret as interp, limits, sse, tts, users
+from tarot import bookimport, config as cfgfile, crypto, db, dedupe, importer, interpret as interp, limits, sse, tts, users
+from tarot import books as books_mod
+from tarot.books import BookConflict, BookForbidden, user_books_dir
 from tarot.auth import (
     LOGOUT_URL,
     current_user,
@@ -114,7 +116,9 @@ def me(request: Request, user: User):
         "display_name": display_name(request),
         "interpretation": interp.config() is not None,
         "tts": tts.config() is not None,
-        "settings": {"auto_read_audio": db.get_user_setting(user, "auto_read_audio") == "true"},
+        "settings": {"auto_read_audio": db.get_user_setting(user, "auto_read_audio") == "true",
+                     "hide_draft_decks": db.get_user_setting(user, "hide_draft_decks") == "true",
+                     "default_books": _default_books(user)},
         "limits": limits.status(user) if limits.enabled() else {"enabled": False},
         "is_admin": is_admin(user),
         "authenticated": authenticated,
@@ -149,8 +153,55 @@ def list_cards():
     return out
 
 
+def _controls_deck(d, user: str) -> bool:
+    """Who may curate a deck (incl. its companion-book links): the staging
+    owner, the library publisher, or an admin (builtin decks: admin only)."""
+    if d.tier == decks_mod.STAGING:
+        return d.owner == user
+    if d.tier == decks_mod.LIBRARY:
+        return d.published_by == user or is_admin(user)
+    return is_admin(user)
+
+
+class DeckPatch(BaseModel):
+    tile_cover: bool | None = None
+
+
+@app.patch("/api/decks/{slug}")
+def patch_deck(slug: str, req: DeckPatch, user: User):
+    """Owner-curated deck presentation options."""
+    deck = get_deck_or_404(slug, user)
+    if not _controls_deck(deck, user):
+        raise HTTPException(403, "only the deck's owner can change this")
+    if req.tile_cover is not None:
+        if req.tile_cover and deck.cover is None:
+            raise HTTPException(400, "this deck has no cover image")
+        decks_mod.update_manifest(deck.path, tile_cover=True if req.tile_cover else None)
+    return {"slug": slug, "tile_cover": bool(req.tile_cover)}
+
+
+class DeckBooksRequest(BaseModel):
+    books: list[str]
+
+
+@app.put("/api/decks/{slug}/books")
+def set_deck_books(slug: str, req: DeckBooksRequest, user: User):
+    """Curate a deck's companion guidebooks. Deck-side authority only —
+    general books never attach themselves to decks."""
+    deck = get_deck_or_404(slug, user)
+    if not _controls_deck(deck, user):
+        raise HTTPException(403, "only the deck's owner can curate its companion books")
+    known = books_mod.discover_books(user)
+    bad = [b for b in req.books if b not in known]
+    if bad:
+        raise HTTPException(400, f"unknown book(s): {', '.join(bad)}")
+    decks_mod.update_manifest(deck.path, books=req.books or None)
+    return {"slug": slug, "books": req.books}
+
+
 @app.get("/api/decks")
 def list_decks(user: User):
+    visible_books = books_mod.discover_books(user)
     return [
         {
             "slug": d.slug,
@@ -174,6 +225,11 @@ def list_decks(user: User):
             "yours": d.tier == decks_mod.STAGING and d.owner == user,
             "can_unpublish": d.tier == decks_mod.LIBRARY
             and (d.published_by == user or is_admin(user)),
+            "books": d.books,
+            "tile_cover": d.tile_cover,
+            "can_edit_books": _controls_deck(d, user),
+            "suggested_books": books_mod.suggest_books(d, visible_books)
+            if _controls_deck(d, user) else [],
         }
         for d in discover_decks(user).values()
     ]
@@ -425,7 +481,7 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
         if isinstance(uploaded_manifest, dict):
             manifest = {
                 k: uploaded_manifest[k]
-                for k in ("source", "attribution", "license", "suits", "majors", "extras")
+                for k in ("source", "attribution", "license", "suits", "majors", "extras", "tile_cover")
                 if uploaded_manifest.get(k)
             }
     manifest["name"] = name
@@ -440,6 +496,221 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
         "majors_only": len(mapping) == 22 and all(i < 22 for i in mapping),
         "warnings": problems,
     }
+
+
+# --- guidebooks ---------------------------------------------------------------
+
+BOOK_JOBS: dict[str, dict] = {}
+MAX_BOOK_UPLOAD_BYTES = 100 * 1024 * 1024
+
+
+def _book_view(b, user: str) -> dict:
+    return {
+        "slug": b.slug,
+        "name": b.name,
+        "author": b.author,
+        "tier": b.tier,
+        "published": b.tier == decks_mod.LIBRARY,
+        "published_by": b.published_by,
+        "yours": b.tier == decks_mod.STAGING and b.owner == user,
+        "can_unpublish": b.tier == decks_mod.LIBRARY
+        and (b.published_by == user or is_admin(user)),
+        "pages": b.pages,
+        "cards_covered": b.cards_covered,
+        "chunk_count": b.chunk_count,
+        "llm_assisted": b.llm_assisted,
+        "card_pages": {str(k): v for k, v in b.card_pages().items()},
+    }
+
+
+def _passages_by_position(user: str, slugs: list[str], cards: list[dict]) -> dict[int, dict[str, str]]:
+    """{position: {book name: passage}} for a drawn spread (extras 78+ have
+    no canonical passages; unknown/invisible book slugs drop silently)."""
+    if not slugs:
+        return {}
+    indices = [c["card"]["index"] for c in cards if c["card"]["index"] < 78]
+    by_index = books_mod.passages_for_reading(user, slugs, indices)
+    return {i: by_index[c["card"]["index"]] for i, c in enumerate(cards)
+            if c["card"]["index"] in by_index}
+
+
+def get_book_or_404(slug: str, user: str):
+    book = books_mod.discover_books(user).get(slug)
+    if not book:
+        raise HTTPException(404, f"no book '{slug}'")
+    return book
+
+
+@app.get("/api/books")
+def list_books(user: User):
+    return [_book_view(b, user)
+            for b in sorted(books_mod.discover_books(user).values(), key=lambda b: b.name.lower())]
+
+
+def _start_book_import(user: str, slug: str, name: str, dest: Path) -> str:
+    job_id = secrets.token_hex(8)
+    job = {"owner": user, "slug": slug, "name": name, "stage": "queued",
+           "page": 0, "pages": 0, "cards_covered": 0, "llm_assisted": False,
+           "failed_pages": [], "done": False, "error": None}
+    BOOK_JOBS[job_id] = job
+
+    def on_progress(stage: str, done: int, total: int) -> None:
+        job["stage"], job["page"], job["pages"] = stage, done, total
+
+    def run() -> None:
+        try:
+            result = bookimport.import_book(dest / "source.pdf", dest, user, name,
+                                            on_progress=on_progress)
+            job.update(result)
+            job["failed_pages"] = result.get("failed_pages", [])
+        except bookimport.BookImportError as e:
+            job["error"] = str(e)
+        except BaseException as e:  # noqa: BLE001
+            job["error"] = str(e) or e.__class__.__name__
+        finally:
+            job["stage"] = "done"
+            job["done"] = True
+
+    threading.Thread(target=run, daemon=True).start()
+    return job_id
+
+
+@app.post("/api/books/upload")
+def upload_book(user: User, file: UploadFile = File(...), name: str = Form(...), slug: str = Form("")):
+    slug = re.sub(r"[^a-z0-9-]", "-", (slug or name).lower()).strip("-")
+    if not slug:
+        raise HTTPException(400, "book needs a name")
+    dest = user_books_dir(user) / slug
+    if dest.exists():
+        raise HTTPException(409, f"you already have a book '{slug}'")
+    data = file.file.read(MAX_BOOK_UPLOAD_BYTES + 1)
+    if len(data) > MAX_BOOK_UPLOAD_BYTES:
+        raise HTTPException(413, "PDF too large")
+    if not data.startswith(b"%PDF"):
+        raise HTTPException(400, "not a PDF file")
+    # An image-only book costs one vision pass; gate like other AI spend.
+    limits.check_tokens(user)
+    dest.mkdir(parents=True)
+    (dest / "source.pdf").write_bytes(data)
+    return {"job": _start_book_import(user, slug, name, dest), "slug": slug}
+
+
+@app.get("/api/books/import/{job_id}")
+def book_import_status(job_id: str, user: User):
+    job = BOOK_JOBS.get(job_id)
+    if not job or job["owner"] != user:
+        raise HTTPException(404, "job not found")
+    return {k: v for k, v in job.items() if k != "owner"}
+
+
+@app.post("/api/books/{slug}/reextract")
+def reextract_book(slug: str, user: User):
+    """Re-run extraction on one of your drafts (recovers a failed import,
+    applies extractor upgrades). Vision pages already transcribed are cached
+    in pages.jsonl and are not re-paid."""
+    dest = user_books_dir(user) / slug
+    if not (dest / "source.pdf").is_file():
+        raise HTTPException(404, f"you have no draft book '{slug}'")
+    limits.check_tokens(user)
+    manifest = dest / "manifest.yaml"
+    name = slug
+    if manifest.is_file():
+        name = (yaml.safe_load(manifest.read_text()) or {}).get("name", slug)
+    return {"job": _start_book_import(user, slug, name, dest), "slug": slug}
+
+
+class BookPatch(BaseModel):
+    name: str | None = None
+    author: str | None = None
+    license: str | None = None
+
+
+@app.patch("/api/books/{slug}")
+def patch_book(slug: str, req: BookPatch, user: User):
+    """Edit a book's descriptive manifest. Staging owner always may; a
+    library book's publisher (or an admin) may too — linking a companion
+    deck shouldn't force an unpublish round-trip."""
+    book = get_book_or_404(slug, user)
+    if book.tier == decks_mod.STAGING:
+        allowed = book.owner == user
+    else:
+        allowed = book.published_by == user or is_admin(user)
+    if not allowed:
+        raise HTTPException(403, "not your book")
+    changes: dict = {}
+    if req.name is not None:
+        changes["name"] = req.name.strip() or book.slug
+    if req.author is not None:
+        changes["author"] = req.author.strip() or None
+    if req.license is not None:
+        changes["license"] = req.license.strip() or None
+    if changes:
+        decks_mod.update_manifest(book.path, **changes)
+    return _book_view(books_mod._load_book(book.path, owner=book.owner, tier=book.tier), user)
+
+
+@app.post("/api/books/{slug}/publish")
+def publish_book(slug: str, user: User):
+    try:
+        book = books_mod.publish_book(user, slug, int(time.time()))
+    except BookConflict:
+        raise HTTPException(409, f"the library already has a book '{slug}' — rename yours first")
+    if book is None:
+        raise HTTPException(404, f"you have no draft book '{slug}' to publish")
+    return _book_view(book, user)
+
+
+@app.post("/api/books/{slug}/unpublish")
+def unpublish_book(slug: str, user: User):
+    try:
+        book = books_mod.unpublish_book(user, slug, is_admin(user), int(time.time()))
+    except BookForbidden:
+        raise HTTPException(403, "only the publisher or an admin can unpublish this book")
+    except BookConflict:
+        raise HTTPException(409, f"a draft book '{slug}' already exists in the destination")
+    if book is None:
+        raise HTTPException(404, f"no library book '{slug}'")
+    return _book_view(book, user)
+
+
+@app.delete("/api/books/{slug}")
+def delete_book(slug: str, user: User):
+    """Delete one of your draft books (including a failed import that never
+    finished). Published books must be unpublished first."""
+    if not books_mod.delete_book(user, slug):
+        raise HTTPException(404, f"you have no draft book '{slug}' to delete")
+    return {"deleted": slug}
+
+
+@app.get("/api/books/passages/{index}")
+def book_passages(index: int, user: User, books: str = ""):
+    """Card-detail payload: the selected books' passages for one card.
+    Unknown/invisible slugs are silently dropped."""
+    if not (0 <= index <= 77):
+        raise HTTPException(404, "no such card")
+    slugs = [s for s in books.split(",") if s]
+    visible = books_mod.discover_books(user)
+    out = []
+    for slug in slugs:
+        book = visible.get(slug)
+        if not book:
+            continue
+        passages = books_mod.passages_for(book, index)
+        if passages:
+            out.append({"slug": slug, "name": book.name,
+                        "passages": [{k: p.get(k) for k in
+                                      ("heading", "orientation", "pages", "sections", "text")}
+                                     for p in passages]})
+    return {"books": out}
+
+
+@app.get("/api/books/{slug}/pages/{n}")
+def book_page_image(slug: str, n: int, user: User):
+    book = get_book_or_404(slug, user)
+    path = book.page_image(n)
+    if not path:
+        raise HTTPException(404, f"no page {n}")
+    return FileResponse(path, headers=IMAGE_CACHE)
 
 
 @app.get("/api/spreads")
@@ -510,6 +781,7 @@ class InterpretRequest(BaseModel):
     spread: str
     cards: list[dict]
     persona: str | None = None  # "alice" | "selene" | "custom" | None = user default
+    books: list[str] = []  # guidebook slugs whose passages inform the reading
 
 
 @app.post("/api/interpret")
@@ -533,9 +805,12 @@ async def interpret_reading(req: InterpretRequest, user: User):
     # a reading slot. Retrying the same draw stays free by fingerprint.
     await run_in_threadpool(limits.check_tokens, user)
     await run_in_threadpool(limits.precheck_reading, user, fp)
+    passages = await run_in_threadpool(
+        _passages_by_position, user, req.books, req.cards)
     try:
         text = await interp.interpret(req.question, spread_name, req.cards, system_prompt=prompt,
-                                      usage_meta={"owner": user, "kind": "single"})
+                                      usage_meta={"owner": user, "kind": "single"},
+                                      passages_by_position=passages)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"LLM endpoint error: {e}")
     try:
@@ -725,18 +1000,36 @@ def set_limits_settings(req: LimitsSettingsRequest, user: User):
 
 class UserSettingsRequest(BaseModel):
     auto_read_audio: bool | None = None
+    hide_draft_decks: bool | None = None
+    default_books: list[str] | None = None
+
+
+def _default_books(user: str) -> list[str]:
+    try:
+        v = json.loads(db.get_user_setting(user, "default_books") or "[]")
+        return [s for s in v if isinstance(s, str)] if isinstance(v, list) else []
+    except json.JSONDecodeError:
+        return []
 
 
 @app.get("/api/settings/me")
 def get_my_settings(user: User):
     """Per-user settings that follow the account across devices."""
-    return {"auto_read_audio": db.get_user_setting(user, "auto_read_audio") == "true"}
+    return {"auto_read_audio": db.get_user_setting(user, "auto_read_audio") == "true",
+            "hide_draft_decks": db.get_user_setting(user, "hide_draft_decks") == "true",
+            "default_books": _default_books(user)}
 
 
 @app.put("/api/settings/me")
 def set_my_settings(req: UserSettingsRequest, user: User):
     if req.auto_read_audio is not None:
         db.set_user_setting(user, "auto_read_audio", "true" if req.auto_read_audio else "false")
+    if req.hide_draft_decks is not None:
+        db.set_user_setting(user, "hide_draft_decks", "true" if req.hide_draft_decks else "false")
+    if req.default_books is not None:
+        known = books_mod.discover_books(user)
+        db.set_user_setting(user, "default_books",
+                            json.dumps([s for s in req.default_books if s in known]))
     return get_my_settings(user)
 
 
@@ -761,6 +1054,7 @@ class SaveReadingRequest(BaseModel):
     question: str | None = None
     cards: list[dict]
     notes: str = ""
+    books: list[str] = []  # guidebooks that informed the quick interpretation
 
 
 class UpdateReadingRequest(BaseModel):
@@ -785,7 +1079,11 @@ def readings_list(user: User):
 
 @app.post("/api/readings")
 def readings_save(req: SaveReadingRequest, user: User):
-    return db.save_reading(user, req.question, req.deck, req.spread, req.cards, notes=req.notes)
+    r = db.save_reading(user, req.question, req.deck, req.spread, req.cards, notes=req.notes)
+    if req.books:
+        db.set_reading_books(r["id"], user, req.books)
+        r["books"] = sorted(set(req.books))
+    return r
 
 
 @app.get("/api/readings/{reading_id}")
@@ -847,6 +1145,7 @@ class GuidedReadingRequest(BaseModel):
 
 class StreamInterpretRequest(BaseModel):
     persona: str | None = None  # fixed for the reading; sent on each streamed call
+    books: list[str] = []  # guidebook slugs whose passages inform this call
 
 
 @app.post("/api/readings/guided")
@@ -930,15 +1229,20 @@ def interpret_focused(reading_id: int, position: int, req: StreamInterpretReques
 
     spread = SPREADS_BY_SLUG.get(reading["spread"])
     spread_name = spread["name"] if spread else reading["spread"]
+    passages = _passages_by_position(user, req.books, [cards[position]]).get(0)
     if reading["interpretation"]["mode"] == "cumulative":
         focused = db.get_focused_interpretations(reading_id, user)
         prior = [(cards[i], focused.get(i)) for i in range(position) if i < len(cards)]
-        content = interp.describe_card(reading["question"], spread_name, cards[position], prior=prior)
+        content = interp.describe_card(reading["question"], spread_name, cards[position],
+                                       prior=prior, passages=passages)
     else:
-        content = interp.describe_card(reading["question"], spread_name, cards[position])
+        content = interp.describe_card(reading["question"], spread_name, cards[position],
+                                       passages=passages)
 
     def persist(text: str):
         db.set_focused_interpretation(reading_id, user, position, text, persona=req.persona)
+        if req.books:
+            db.set_reading_books(reading_id, user, req.books)
 
     return _stream_and_persist(request, user, req.persona, prompt, content, persist,
                                usage_meta={"owner": user, "kind": "focused", "reading_id": reading_id})
@@ -959,10 +1263,14 @@ def interpret_comprehensive(reading_id: int, req: StreamInterpretRequest,
     spread = SPREADS_BY_SLUG.get(reading["spread"])
     spread_name = spread["name"] if spread else reading["spread"]
     focused = db.get_focused_interpretations(reading_id, user)
-    content = interp.describe_comprehensive(reading["question"], spread_name, reading["cards"], focused)
+    content = interp.describe_comprehensive(
+        reading["question"], spread_name, reading["cards"], focused,
+        passages_by_position=_passages_by_position(user, req.books, reading["cards"]))
 
     def persist(text: str):
         db.set_comprehensive_interpretation(reading_id, user, text, persona=req.persona)
+        if req.books:
+            db.set_reading_books(reading_id, user, req.books)
 
     # The comprehensive synthesis grows with the spread — a 10-card Celtic Cross
     # walkthrough truncated at the default cap. Give it room scaled to card count

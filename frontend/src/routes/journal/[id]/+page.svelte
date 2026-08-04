@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api, cardMeta, deckCardName, type Card as CardType, type DeckSummary, type DrawnCard, type SavedReading } from '$lib/api';
+	import { api, cardMeta, deckCardName, type BookSummary, type Card as CardType, type DeckSummary, type DrawnCard, type SavedReading } from '$lib/api';
 	import AudioButton from '$lib/AudioButton.svelte';
 	import Lightbox from '$lib/Lightbox.svelte';
 	import VisibilitySelect from '$lib/VisibilitySelect.svelte';
@@ -11,6 +11,22 @@
 	const id = $derived(Number(page.params.id));
 
 	let reading = $state<SavedReading | null>(null);
+	let allBooks = $state<BookSummary[]>([]);
+	// The recorded provenance set, restricted to books this viewer can see.
+	const readingBooks = $derived(
+		(reading?.books ?? []).filter((slug) => allBooks.some((b) => b.slug === slug))
+	);
+	// Infobox: the VIEWING deck's curated companions plus the recorded set.
+	const infoboxBooks = $derived.by(() => {
+		const visible = new Set(allBooks.map((b) => b.slug));
+		const curated = (viewDeckInfo?.books ?? []).filter((s) => visible.has(s));
+		return [...new Set([...curated, ...readingBooks])];
+	});
+	const bookNames = $derived(
+		(reading?.books ?? []).map(
+			(slug) => allBooks.find((b) => b.slug === slug)?.name ?? slug
+		)
+	);
 	let decks = $state<DeckSummary[]>([]);
 	let viewDeck = $state('');
 	let meta = $state<CardType[]>([]);
@@ -27,6 +43,7 @@
 	}
 
 	$effect(() => {
+		api.books().then((b) => (allBooks = b));
 		api.reading(id)
 			.then((r) => {
 				reading = r;
@@ -91,6 +108,7 @@
 			<p class="dim">
 				{fmtDate(reading.created_at)}
 				{#if !reading.yours}· by <span class="badge">{reading.owner}</span>{/if}
+				{#if bookNames.length}· books consulted: {bookNames.join(', ')}{/if}
 			</p>
 		</div>
 		{#if reading.yours}
@@ -229,6 +247,7 @@
 				renames={viewDeckInfo}
 				onclose={() => (zoomedIdx = null)}
 				onnav={nav}
+				books={infoboxBooks}
 			/>
 		{/key}
 	{/if}

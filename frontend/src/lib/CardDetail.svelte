@@ -1,14 +1,17 @@
 <script lang="ts">
-	import { deckCardName, type Card, type CardView, type DeckRenames } from '$lib/api';
+	import { api, deckCardName, type BookPassage, type Card, type CardView, type DeckRenames } from '$lib/api';
 
 	let {
 		drawn,
 		meta,
-		renames = undefined
+		renames = undefined,
+		books = []
 	}: {
 		drawn: CardView;
 		meta: Card[];
 		renames?: DeckRenames;
+		/** Guidebook slugs whose excerpts to show (the reading's selected set). */
+		books?: string[];
 	} = $props();
 
 	const card = $derived(meta.find((c) => c.index === drawn.card.index));
@@ -17,6 +20,30 @@
 		drawn.reversed ? card?.reversed_meaning : card?.upright
 	);
 	const pkt = $derived(drawn.reversed ? card?.pkt_reversed : card?.pkt_upright);
+
+	let excerpts = $state<{ slug: string; name: string; passages: BookPassage[] }[]>([]);
+	$effect(() => {
+		const index = drawn.card.index;
+		const wanted = books;
+		if (!wanted.length || index > 77) {
+			excerpts = [];
+			return;
+		}
+		let stale = false;
+		api.bookPassages(index, wanted).then((r) => {
+			if (!stale) excerpts = r.books;
+		}).catch(() => {
+			if (!stale) excerpts = [];
+		});
+		return () => { stale = true; };
+	});
+
+	// Orientation-matching passages first; unoriented prose next; other side last.
+	function ordered(passages: BookPassage[]): BookPassage[] {
+		const want = drawn.reversed ? 'reversed' : 'upright';
+		const rank = (p: BookPassage) => (p.orientation === want ? 0 : p.orientation === null ? 1 : 2);
+		return [...passages].sort((a, b) => rank(a) - rank(b));
+	}
 </script>
 
 <aside class="detail">
@@ -44,6 +71,18 @@
 			{/if}
 		</details>
 	{/if}
+	{#each excerpts as book (book.slug)}
+		<details>
+			<summary>From <em>{book.name}</em></summary>
+			{#each ordered(book.passages) as p, i (i)}
+				{#if p.orientation}<p class="orient">{p.orientation}</p>{/if}
+				<p>{p.text}</p>
+			{/each}
+			<a class="viewin" href="/books/{book.slug}?page={(ordered(book.passages)[0]?.pages?.[0] ?? 0) + 1}">
+				view in book →
+			</a>
+		</details>
+	{/each}
 </aside>
 
 <style>
@@ -94,5 +133,18 @@
 
 	.dim {
 		color: var(--text-dim);
+	}
+
+	.orient {
+		font-size: 0.75rem;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-dim);
+		margin-bottom: 0.1rem;
+	}
+
+	.viewin {
+		font-size: 0.8rem;
+		color: var(--accent);
 	}
 </style>

@@ -68,6 +68,11 @@ class Deck:
     suit_names: dict[str, str] = field(default_factory=dict)
     # optional deck-specific major arcana names, e.g. {"The Fool": "Spore"}
     major_names: dict[str, str] = field(default_factory=dict)
+    # deck-curated companion guidebooks (book slugs). Only the deck's
+    # controller edits this — general books never attach themselves to decks.
+    books: list[str] = field(default_factory=list)
+    # gallery tile shows the box cover instead of card 0 (owner's choice)
+    tile_cover: bool = False
     cards: dict[int, Path] = field(default_factory=dict)
     # deck-specific cards beyond the canonical 78 (e.g. invented majors),
     # addressed as index 78+position: [(index, display name, path), ...]
@@ -117,6 +122,8 @@ def _load_deck(deck_path: Path, owner: str | None = None, tier: str = STAGING) -
             for k, v in (manifest.get("majors") or {}).items()
             if k in MAJOR_NAMES and v
         },
+        books=[str(b) for b in manifest.get("books") or [] if b],
+        tile_cover=bool(manifest.get("tile_cover")),
     )
     cards_dir = deck_path / "cards"
     if cards_dir.is_dir():

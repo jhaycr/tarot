@@ -28,6 +28,17 @@
 		return { left: Math.max(0, r.limit - r.used), limit: r.limit };
 	});
 
+	let hideDrafts = $state(false);
+	// The pickable pool: drafts (your unpublished decks) can be excluded via
+	// the account setting; the deck GALLERY always shows everything.
+	const pickableDecks = $derived(hideDrafts ? decks.filter((d) => d.tier !== 'staging') : decks);
+	$effect(() => {
+		// selected deck fell out of the pool (setting toggled, deck deleted…)
+		if (pickableDecks.length && !pickableDecks.find((x) => x.slug === prefDeck.value)) {
+			prefDeck.value = pickableDecks[0].slug;
+		}
+	});
+
 	function deckRank(d: DeckSummary): number {
 		if (favDecks.value.includes(d.slug)) return 0;
 		const r = recentDecks.value.indexOf(d.slug);
@@ -35,7 +46,7 @@
 	}
 
 	const orderedDecks = $derived(
-		[...decks].sort((a, b) => deckRank(a) - deckRank(b) || a.name.localeCompare(b.name))
+		[...pickableDecks].sort((a, b) => deckRank(a) - deckRank(b) || a.name.localeCompare(b.name))
 	);
 	const visibleDecks = $derived.by(() => {
 		if (showAllDecks) return orderedDecks;
@@ -47,7 +58,7 @@
 		);
 		return pinned.length ? pinned : orderedDecks.slice(0, 3);
 	});
-	const hiddenDeckCount = $derived(decks.length - visibleDecks.length);
+	const hiddenDeckCount = $derived(pickableDecks.length - visibleDecks.length);
 	const selectedDeck = $derived(decks.find((d) => d.slug === prefDeck.value));
 
 	let includeExtras = $state(false);
@@ -65,15 +76,13 @@
 			.then((m) => {
 				llmEnabled = m.interpretation;
 				limitsStatus = m.limits;
+				hideDrafts = m.settings.hide_draft_decks;
 			})
 			.catch(() => {});
 		Promise.all([api.decks(), api.spreads()])
 			.then(([d, s]) => {
 				decks = d;
 				spreads = s;
-				if (!decks.find((x) => x.slug === prefDeck.value) && decks.length) {
-					prefDeck.value = decks[0].slug;
-				}
 				// Reset a stale saved spread (e.g. a slug left over from a spread
 				// that no longer exists) so the draw can't 404 on it.
 				if (!spreads.find((x) => x.slug === prefSpread.value) && spreads.length) {
@@ -159,7 +168,13 @@
 						class:selected={prefDeck.value === deck.slug}
 						onclick={() => (prefDeck.value = deck.slug)}
 					>
-						<img src={api.cardImage(deck.slug, 0)} alt="" loading="lazy" />
+						<img
+						src={deck.tile_cover && deck.has_cover
+							? api.coverImage(deck.slug)
+							: api.cardImage(deck.slug, 0)}
+						alt=""
+						loading="lazy"
+					/>
 						<span>
 							<strong>{deck.name}</strong>
 							{#if deck.majors_only}<small class="dim">majors only</small>

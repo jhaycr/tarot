@@ -6,6 +6,7 @@
 		api,
 		cardMeta,
 		deckCardName,
+		type BookSummary,
 		type Card as CardType,
 		type DeckSummary,
 		type DrawnCard,
@@ -13,6 +14,7 @@
 		type SavedReading
 	} from '$lib/api';
 	import AudioButton from '$lib/AudioButton.svelte';
+	import BookPicker from '$lib/BookPicker.svelte';
 	import Card from '$lib/Card.svelte';
 	import Lightbox from '$lib/Lightbox.svelte';
 	import { toParagraphs } from '$lib/text';
@@ -28,8 +30,34 @@
 	// Derived, not set in a .then — api.decks() often resolves before `reading`
 	// is assigned, which would strand deckInfo at null (deck renames/name/back).
 	const deckInfo = $derived(decks.find((d) => d.slug === reading?.deck) ?? null);
+	// Infobox excerpts: deck-curated companions always show, plus the picker's set.
+	const infoboxBooks = $derived.by(() => {
+		const visible = new Set(allBooks.map((b) => b.slug));
+		const curated = (deckInfo?.books ?? []).filter((s) => visible.has(s));
+		return [...new Set([...curated, ...books])];
+	});
 	let personas = $state<Persona[]>([]);
 	let persona = $state<string | null>(null);
+	// Guidebooks informing this reading: seeded from the reading's recorded set
+	// (resume), else the deck's companion books, else the user's default set.
+	let allBooks = $state<BookSummary[]>([]);
+	let books = $state<string[]>([]);
+	let defaultBooks: string[] = [];
+	let booksLoaded = false, meLoaded = false, decksLoaded = false, booksSeeded = false;
+
+	function seedBooks() {
+		if (booksSeeded || !reading || !booksLoaded || !meLoaded || !decksLoaded) return;
+		booksSeeded = true;
+		const visible = new Set(allBooks.map((b) => b.slug));
+		const recorded = (reading.books ?? []).filter((s) => visible.has(s));
+		if (recorded.length) {
+			books = recorded;
+			return;
+		}
+		const deckBooks = decks.find((d) => d.slug === reading!.deck)?.books ?? [];
+		const companions = deckBooks.filter((s) => visible.has(s));
+		books = companions.length ? companions : defaultBooks.filter((s) => visible.has(s));
+	}
 	let error = $state('');
 
 	// Per-card focused text + the comprehensive, streamed live and seeded from
@@ -73,10 +101,22 @@
 
 	async function init() {
 		try {
-			api.decks().then((d) => (decks = d));
+			api.decks().then((d) => {
+				decks = d;
+				decksLoaded = true;
+				seedBooks();
+			});
 			api.me().then((m) => {
 				ttsEnabled = m.tts;
 				autoRead = m.settings.auto_read_audio;
+				defaultBooks = m.settings.default_books;
+				meLoaded = true;
+				seedBooks();
+			});
+			api.books().then((b) => {
+				allBooks = b;
+				booksLoaded = true;
+				seedBooks();
 			});
 			api.personas().then((p) => {
 				personas = p.personas;
@@ -104,6 +144,7 @@
 				return;
 			}
 			seedFromPersisted();
+			seedBooks();
 		} catch (e) {
 			error = errMsg(e);
 		}
@@ -140,7 +181,7 @@
 		ctrl = new AbortController();
 		let ok = false;
 		try {
-			for await (const ev of api.streamFocused(reading.id, i, persona, ctrl.signal)) {
+			for await (const ev of api.streamFocused(reading.id, i, persona, ctrl.signal, books)) {
 				if (ev.type === 'token') focused[i] += ev.data.text;
 				else if (ev.type === 'done') ok = true;
 				else if (ev.type === 'error') error = ev.data.message;
@@ -167,7 +208,7 @@
 		ctrl = new AbortController();
 		let ok = false;
 		try {
-			for await (const ev of api.streamComprehensive(reading.id, persona, ctrl.signal)) {
+			for await (const ev of api.streamComprehensive(reading.id, persona, ctrl.signal, books)) {
 				if (ev.type === 'token') comprehensive += ev.data.text;
 				else if (ev.type === 'done') ok = true;
 				else if (ev.type === 'error') error = ev.data.message;
@@ -240,6 +281,7 @@
 			<div class="actions">
 				<!-- Mid-reading switches apply from the next card on; already-read
 				     cards keep the persona (and voice) that read them. -->
+				<BookPicker available={allBooks} bind:selected={books} />
 				<select
 					class="reader"
 					bind:value={persona}
@@ -363,6 +405,7 @@
 				renames={deckInfo ?? undefined}
 				onclose={() => (zoomedIdx = null)}
 				onnav={nav}
+				books={infoboxBooks}
 			/>
 		{/key}
 	{/if}

@@ -235,6 +235,12 @@ def _m7_reading_charges(con: sqlite3.Connection) -> None:
     )
 
 
+def _m_reading_books(con: sqlite3.Connection) -> None:
+    """Provenance: which guidebooks informed a reading's interpretation
+    (JSON array of book slugs; [] = none)."""
+    con.execute("ALTER TABLE readings ADD COLUMN books TEXT NOT NULL DEFAULT '[]'")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m1_user_registry),
     (2, _m2_reading_visibility),
@@ -243,6 +249,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (5, _m5_tts),
     (6, _m6_usage_and_user_settings),
     (7, _m7_reading_charges),
+    (8, _m_reading_books),
 ]
 
 
@@ -359,6 +366,24 @@ def _attach_shares(con: sqlite3.Connection, rows: list[dict]) -> list[dict]:
     return rows
 
 
+def set_reading_books(reading_id: int, owner: str, books: list[str]) -> None:
+    """Record which guidebooks informed this reading (provenance; owner-gated).
+
+    UNION-merges with what's already recorded: each guided card is streamed
+    with the picker's set at that moment, and a book that informed any part
+    of the reading stays on the record even if it's unselected later."""
+    with connect() as con:
+        if not _owns(con, reading_id, owner):
+            return
+        row = con.execute("SELECT books FROM readings WHERE id = ?", (reading_id,)).fetchone()
+        try:
+            current = set(json.loads(row["books"] or "[]")) if row else set()
+        except (TypeError, json.JSONDecodeError):
+            current = set()
+        con.execute("UPDATE readings SET books = ? WHERE id = ?",
+                    (json.dumps(sorted(current | set(books))), reading_id))
+
+
 # Guided-reading interpretation. The whole-spread (comprehensive/single) row uses
 # this sentinel position so a plain composite PK enforces one-per-card and exactly
 # one whole-spread row (SQLite lets NULL duplicate in a PK, hence -1 not NULL).
@@ -374,6 +399,10 @@ def _attach_interpretations(con: sqlite3.Connection, rows: list[dict], full: boo
             "mode": r.pop("interpretation_mode", None),
             "status": r.pop("interpretation_status", None) or "none",
         }
+        try:
+            r["books"] = json.loads(r.get("books") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            r["books"] = []
     if not full:
         return rows
     ids = [r["id"] for r in rows]

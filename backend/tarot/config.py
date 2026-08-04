@@ -17,6 +17,11 @@ additive.
       max_tokens: 900
     reading:
       reversal_chance: 25
+    books:
+      vision_model: qwen/qwen2.5-vl-72b-instruct   # reads image-only guidebook
+                                # PDFs at import; same endpoint/key as llm;
+                                # defaults to llm.model (which must then be
+                                # vision-capable)
     limits:                     # per-user daily spend caps; omit/blank = no cap
       readings_per_day: 10
       llm_tokens_per_day: 150000

@@ -80,6 +80,19 @@
 
 	let autoRead = $state(false);
 	let autoReadError = $state('');
+	let hideDrafts = $state(false);
+	let hideDraftsError = $state('');
+
+	async function setHideDrafts(v: boolean) {
+		hideDrafts = v;
+		hideDraftsError = '';
+		try {
+			await api.setMySettings({ hide_draft_decks: v });
+		} catch {
+			hideDrafts = !v;
+			hideDraftsError = 'Could not save — try again.';
+		}
+	}
 
 	async function setAutoRead(v: boolean) {
 		autoRead = v;
@@ -97,6 +110,7 @@
 			isAdmin = m.is_admin;
 			ttsEnabled = m.tts;
 			autoRead = m.settings.auto_read_audio;
+			hideDrafts = m.settings.hide_draft_decks;
 			if (m.is_admin) {
 				refreshLlm();
 				refreshTts();
@@ -201,6 +215,17 @@
 		{#if autoReadError}<p class="error">{autoReadError}</p>{/if}
 	</section>
 {/if}
+
+<section>
+	<h2>Reading decks</h2>
+	<label class="fld checkline">
+		<input type="checkbox" checked={hideDrafts} onchange={(e) => setHideDrafts(e.currentTarget.checked)} />
+		<span>Hide your draft (unpublished) decks when starting a reading. They stay visible on
+			the Decks page; partial or work-in-progress decks just won't clutter the picker.
+			Saved to your account.</span>
+	</label>
+	{#if hideDraftsError}<p class="error">{hideDraftsError}</p>{/if}
+</section>
 
 {#if !isAdmin}
 	<p class="dim">

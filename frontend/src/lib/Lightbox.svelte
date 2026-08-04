@@ -9,7 +9,8 @@
 		renames = undefined,
 		onclose,
 		onnav = undefined,
-		src = undefined
+		src = undefined,
+		books = []
 	}: {
 		/** Deck slug the art is resolved against. */
 		deck: string;
@@ -21,6 +22,8 @@
 		onnav?: (dir: -1 | 1) => void;
 		/** Art URL override for non-card images (e.g. the deck's back). */
 		src?: string;
+		/** Guidebook slugs whose excerpts show in the infobox. */
+		books?: string[];
 	} = $props();
 
 	// Visual orientation only: starts as drawn, and the flip button turns the
@@ -54,7 +57,7 @@
 		<div class="zoominfo" role="presentation" onclick={(e) => e.stopPropagation()}>
 			<!-- The infobox follows the visual flip, so its meanings match the art;
 			     the figcaption stays the record of how the card was drawn. -->
-			<CardDetail drawn={{ ...view, reversed: showReversed }} {meta} {renames} />
+			<CardDetail drawn={{ ...view, reversed: showReversed }} {meta} {renames} {books} />
 			<button class="flip" onclick={() => (flips += 1)}>⟳ Flip</button>
 		</div>
 		<button class="zoomclose" onclick={onclose} aria-label="Close">✕</button>
