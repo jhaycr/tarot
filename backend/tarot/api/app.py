@@ -92,15 +92,30 @@ async def _limit_exceeded(request: Request, exc: limits.LimitExceeded):
     return JSONResponse(status_code=429, content={"detail": str(exc)})
 
 
-def _draw_fingerprint(prefix: str, user: str, question: str | None, cards: list[dict]) -> str:
+def _draw_fingerprint(prefix: str, user: str, question: str | None, cards: list[dict],
+                      _normalize: bool = True) -> str:
     """Content hash of a draw, so re-interpreting/recreating the same spread
-    charges the daily readings cap exactly once."""
+    charges the daily readings cap exactly once. The question is normalized
+    (whitespace collapsed, case folded) so trivial retyping isn't a second
+    charge; card order is deliberately ignored (same cards = same reading)."""
     import hashlib
 
+    q = question or ""
+    if _normalize:
+        q = " ".join(q.split()).casefold()
     payload = json.dumps(
-        [user, question or "", sorted((c["card"]["index"], bool(c.get("reversed"))) for c in cards)]
+        [user, q, sorted((c["card"]["index"], bool(c.get("reversed"))) for c in cards)]
     )
     return f"{prefix}:{hashlib.sha256(payload.encode()).hexdigest()}"
+
+
+def _draw_fingerprints(prefix: str, user: str, question: str | None, cards: list[dict]) -> tuple[str, str | None]:
+    """(fingerprint, legacy_fingerprint) — legacy is the pre-normalization
+    hash, checked on lookup so readings charged before the change never
+    re-bill; None when the two coincide."""
+    fp = _draw_fingerprint(prefix, user, question, cards)
+    legacy = _draw_fingerprint(prefix, user, question, cards, _normalize=False)
+    return fp, (legacy if legacy != fp else None)
 
 
 @app.get("/api/health")
@@ -808,14 +823,14 @@ async def interpret_reading(req: InterpretRequest, user: User):
     except ValueError as e:
         raise HTTPException(400, str(e))
     try:
-        fp = _draw_fingerprint("quick", user, req.question, req.cards)
+        fp, fp_legacy = _draw_fingerprints("quick", user, req.question, req.cards)
     except (KeyError, TypeError):
         raise HTTPException(422, "malformed cards payload")
     # Gate both caps up front, but charge the reading only after the LLM call
     # succeeds — a provider failure (or the token 429 below) must not consume
     # a reading slot. Retrying the same draw stays free by fingerprint.
     await run_in_threadpool(limits.check_tokens, user)
-    await run_in_threadpool(limits.precheck_reading, user, fp)
+    await run_in_threadpool(limits.precheck_reading, user, fp, fp_legacy)
     passages = await run_in_threadpool(
         _passages_by_position, user, req.books, req.cards)
     try:
@@ -825,7 +840,7 @@ async def interpret_reading(req: InterpretRequest, user: User):
     except httpx.HTTPError as e:
         raise HTTPException(502, f"LLM endpoint error: {e}")
     try:
-        await run_in_threadpool(limits.charge_reading, user, fp)
+        await run_in_threadpool(limits.charge_reading, user, fp, fp_legacy)
     except limits.LimitExceeded:
         pass  # raced past the precheck: the reading already happened, accept the overshoot
     return {"interpretation": text, "persona": req.persona or interp.default_persona()}
@@ -1168,7 +1183,7 @@ def create_guided(req: GuidedReadingRequest, user: User):
     # duplicate create of the same draw never double-bills. Both caps gate only
     # the START of a reading — once created, it can always be finished.
     limits.check_tokens(user)
-    limits.charge_reading(user, _draw_fingerprint("guided", user, req.question, req.cards))
+    limits.charge_reading(user, *_draw_fingerprints("guided", user, req.question, req.cards))
     r = db.create_guided_reading(
         user, req.question, req.deck, req.spread, req.cards, req.mode, notes=req.notes
     )
@@ -1212,8 +1227,13 @@ def _stream_and_persist(request: Request, user: str, persona: str | None,
             yield sse.sse("error", {"message": "interpretation failed"})
             return
         full = "".join(parts).strip()
-        if full:
-            await run_in_threadpool(persist, full)
+        if not full:
+            # An empty completion is a failure, not a result: persisting
+            # nothing while signalling `done` would strand the reading
+            # in_progress with the client believing it finished.
+            yield sse.sse("error", {"message": "the model returned an empty response — try again"})
+            return
+        await run_in_threadpool(persist, full)
         yield sse.sse("done", {"persona": persona or interp.default_persona()})
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers=sse.SSE_HEADERS)
@@ -1236,7 +1256,7 @@ def interpret_focused(reading_id: int, position: int, req: StreamInterpretReques
     # No token check: a reading you were allowed to start can always be
     # finished (overshoot is bounded by one reading).
     limits.charge_reading_once(
-        user, _draw_fingerprint("guided", user, reading["question"], reading["cards"]))
+        user, *_draw_fingerprints("guided", user, reading["question"], reading["cards"]))
 
     spread = SPREADS_BY_SLUG.get(reading["spread"])
     spread_name = spread["name"] if spread else reading["spread"]
@@ -1269,7 +1289,7 @@ def interpret_comprehensive(reading_id: int, req: StreamInterpretRequest,
     # Same charge-on-start rule as interpret_focused; finishing an already-
     # charged reading is never blocked.
     limits.charge_reading_once(
-        user, _draw_fingerprint("guided", user, reading["question"], reading["cards"]))
+        user, *_draw_fingerprints("guided", user, reading["question"], reading["cards"]))
 
     spread = SPREADS_BY_SLUG.get(reading["spread"])
     spread_name = spread["name"] if spread else reading["spread"]
@@ -1298,9 +1318,19 @@ def interpret_comprehensive(reading_id: int, req: StreamInterpretRequest,
 
 # no-cache (NOT no-store): the URL stays stable while the audio behind it
 # changes whenever the persona's voice settings do, so the browser must
-# revalidate on every play. FileResponse's per-file ETag makes an unchanged
-# piece a 304 and a re-voiced piece a full fetch.
+# revalidate on every play. The ETag is the TTS cache key (script+voice+
+# model+base_url), and we answer If-None-Match ourselves — Starlette's
+# FileResponse sets an ETag but never returns 304, so without this every
+# replay re-downloaded the full file.
 AUDIO_CACHE = {"Cache-Control": "private, no-cache"}
+
+
+def _audio_response(request: Request, path, key: str):
+    etag = f'"{key}"'
+    headers = {**AUDIO_CACHE, "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return FileResponse(path, media_type="audio/mpeg", headers=headers)
 
 
 def _tts_config_or_409() -> dict:
@@ -1311,7 +1341,8 @@ def _tts_config_or_409() -> dict:
 
 
 @app.get("/api/readings/{reading_id}/audio/{position}")
-async def reading_audio(reading_id: int, position: int, user: User, persona: str | None = None):
+async def reading_audio(reading_id: int, position: int, request: Request, user: User,
+                        persona: str | None = None):
     """Spoken audio for one interpretation piece (position -1 = the whole-spread
     row). Anyone who can see the reading can listen; generated on first play,
     cached after. `persona` overrides the voice (the guided page passes its
@@ -1332,8 +1363,15 @@ async def reading_audio(reading_id: int, position: int, user: User, persona: str
         voice = await run_in_threadpool(tts.resolve_voice, persona, user)
     else:
         voice = await run_in_threadpool(tts.resolve_voice, row["persona"], reading["owner"])
+    key = tts.cache_key(script, voice, cfg)
+    cached = (tts.cache_dir() / f"{key}.mp3").is_file()
+    # An unchanged piece the browser already holds is a 304 before any
+    # generation or limit check; the touch keeps the LRU order honest.
+    if cached and request.headers.get("if-none-match") == f'"{key}"':
+        await run_in_threadpool(db.tts_cache_touch, key)
+        return Response(status_code=304, headers={**AUDIO_CACHE, "ETag": f'"{key}"'})
     # cached replays are free and never limit-checked
-    if not (tts.cache_dir() / f"{tts.cache_key(script, voice, cfg['model'])}.mp3").is_file():
+    if not cached:
         await run_in_threadpool(limits.check_minutes, user)
     try:
         path = await tts.get_or_generate(
@@ -1341,7 +1379,7 @@ async def reading_audio(reading_id: int, position: int, user: User, persona: str
             usage_meta={"owner": user, "kind": "speak", "reading_id": reading_id})
     except httpx.HTTPError as e:
         raise HTTPException(502, f"TTS endpoint error: {e}")
-    return FileResponse(path, media_type="audio/mpeg", headers=AUDIO_CACHE)
+    return _audio_response(request, path, key)
 
 
 class TtsRequest(BaseModel):
@@ -1358,14 +1396,16 @@ async def tts_speak(req: TtsRequest, user: User):
     persona = req.persona or interp.default_persona()
     voice = await run_in_threadpool(tts.resolve_voice, persona, user)
     script = tts.build_script("Your reading.", req.text)
-    if not (tts.cache_dir() / f"{tts.cache_key(script, voice, cfg['model'])}.mp3").is_file():
+    key = tts.cache_key(script, voice, cfg)
+    if not (tts.cache_dir() / f"{key}.mp3").is_file():
         await run_in_threadpool(limits.check_minutes, user)
     try:
         path = await tts.get_or_generate(script, voice, cfg,
                                          usage_meta={"owner": user, "kind": "speak"})
     except httpx.HTTPError as e:
         raise HTTPException(502, f"TTS endpoint error: {e}")
-    return FileResponse(path, media_type="audio/mpeg", headers=AUDIO_CACHE)
+    return FileResponse(path, media_type="audio/mpeg",
+                        headers={**AUDIO_CACHE, "ETag": f'"{key}"'})
 
 
 class TtsSettingsRequest(BaseModel):

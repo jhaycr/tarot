@@ -70,6 +70,9 @@
 	const zoomed = $derived(zoomedIdx !== null && reading ? reading.cards[zoomedIdx] : null);
 	let meta = $state<CardType[]>([]);
 	let ctrl: AbortController | null = null;
+	// Resolves when the init() metadata lookups have all landed; streams wait
+	// on it so the first card never goes out with a null persona / empty books.
+	let lookupsReady: Promise<void> = Promise.resolve();
 
 	let ttsEnabled = $state(false);
 	// bind:this refs so auto-read can start a piece the moment it finishes streaming
@@ -101,29 +104,35 @@
 
 	async function init() {
 		try {
-			api.decks().then((d) => {
-				decks = d;
-				decksLoaded = true;
-				seedBooks();
-			});
-			api.me().then((m) => {
-				ttsEnabled = m.tts;
-				autoRead = m.settings.auto_read_audio;
-				defaultBooks = m.settings.default_books;
-				meLoaded = true;
-				seedBooks();
-			});
-			api.books().then((b) => {
-				allBooks = b;
-				booksLoaded = true;
-				seedBooks();
-			});
-			api.personas().then((p) => {
-				personas = p.personas;
-				if (!p.personas.some((x) => x.slug === prefPersona.value)) prefPersona.value = p.default;
-				persona = prefPersona.value;
-			});
-			cardMeta().then((m) => (meta = m));
+			// Lookups run in parallel with the reading create/resume, but they're
+			// gathered into one awaited promise: rejections land in this catch
+			// (not as unhandled), and streamFocused gates on `lookupsReady` so the
+			// first card can't stream before the persona and book set are known.
+			lookupsReady = Promise.all([
+				api.decks().then((d) => {
+					decks = d;
+					decksLoaded = true;
+					seedBooks();
+				}),
+				api.me().then((m) => {
+					ttsEnabled = m.tts;
+					autoRead = m.settings.auto_read_audio;
+					defaultBooks = m.settings.default_books;
+					meLoaded = true;
+					seedBooks();
+				}),
+				api.books().then((b) => {
+					allBooks = b;
+					booksLoaded = true;
+					seedBooks();
+				}),
+				api.personas().then((p) => {
+					personas = p.personas;
+					if (!p.personas.some((x) => x.slug === prefPersona.value)) prefPersona.value = p.default;
+					persona = prefPersona.value;
+				}),
+				cardMeta().then((m) => (meta = m))
+			]).then(() => {});
 
 			if (resumeId) {
 				reading = await api.reading(Number(resumeId));
@@ -144,6 +153,7 @@
 				return;
 			}
 			seedFromPersisted();
+			await lookupsReady;
 			seedBooks();
 		} catch (e) {
 			error = errMsg(e);
@@ -174,8 +184,12 @@
 	}
 
 	async function streamFocused(i: number) {
-		if (!reading) return;
+		if (!reading || streaming !== null) return;
+		// Claim the stream slot before waiting, so a second flip can't slip
+		// past the guard while this one is parked on the lookups.
 		streaming = i;
+		// A rejection here already surfaced via init()'s catch — swallow it.
+		await lookupsReady.catch(() => {});
 		focused[i] = '';
 		error = '';
 		ctrl = new AbortController();
@@ -203,6 +217,7 @@
 	async function revealWholePicture() {
 		if (!reading || streaming !== null) return;
 		streaming = 'comprehensive';
+		await lookupsReady.catch(() => {});
 		comprehensive = '';
 		error = '';
 		ctrl = new AbortController();

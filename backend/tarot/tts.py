@@ -101,6 +101,15 @@ def config() -> dict | None:
     else:
         api_key = file_key
 
+    # A malformed cache_max_mb must degrade to the default, not 500 every
+    # config() caller (/api/me among them).
+    try:
+        cache_mb = float(cfgfile.get("tts", "cache_max_mb", DEFAULT_CACHE_MB))
+        if cache_mb <= 0:
+            cache_mb = DEFAULT_CACHE_MB
+    except (TypeError, ValueError):
+        cache_mb = DEFAULT_CACHE_MB
+
     return {
         "base_url": base_url,
         "model": str(
@@ -110,7 +119,7 @@ def config() -> dict | None:
             or DEFAULT_MODEL
         ),
         "api_key": api_key,
-        "cache_max_bytes": int(cfgfile.get("tts", "cache_max_mb", DEFAULT_CACHE_MB)) * 1024 * 1024,
+        "cache_max_bytes": int(cache_mb * 1024 * 1024),
     }
 
 
@@ -261,8 +270,13 @@ async def synthesize(script: str, voice: dict, cfg: dict,
     return out
 
 
-def cache_key(script: str, voice: dict, model: str) -> str:
-    payload = json.dumps({"script": script, "voice": voice, "model": model}, sort_keys=True)
+def cache_key(script: str, voice: dict, cfg: dict) -> str:
+    """Content address of one audio piece. base_url is part of the identity:
+    the same model name on a different provider is different audio."""
+    payload = json.dumps(
+        {"script": script, "voice": voice, "model": cfg["model"], "base_url": cfg["base_url"]},
+        sort_keys=True,
+    )
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -277,18 +291,32 @@ async def _lock_for(key: str) -> asyncio.Lock:
         return _locks.setdefault(key, asyncio.Lock())
 
 
+ORPHAN_GRACE_SECS = 3600
+
+
 def _evict(budget_bytes: int) -> None:
     """Drop least-recently-played entries until the cache fits the budget,
-    and clean up any orphan files (crash leftovers) not in the index."""
+    and clean up any orphan files (crash leftovers) not in the index.
+
+    Only files past ORPHAN_GRACE_SECS count as orphans: a concurrent
+    get_or_generate writes the file before its index row, and the sweep
+    must not eat that fresh write."""
+    import time
+
     from tarot import db
 
     directory = cache_dir()
     known = db.tts_cache_all()
     indexed = {row["hash"] for row in known}
+    cutoff = time.time() - ORPHAN_GRACE_SECS
     if directory.is_dir():
         for f in directory.glob("*.mp3"):
             if f.stem not in indexed:
-                f.unlink(missing_ok=True)
+                try:
+                    if f.stat().st_mtime < cutoff:
+                        f.unlink(missing_ok=True)
+                except OSError:
+                    pass
     total = sum(row["size_bytes"] for row in known)
     for row in known:  # ordered oldest-played first
         if total <= budget_bytes:
@@ -305,7 +333,7 @@ async def get_or_generate(script: str, voice: dict, cfg: dict,
 
     from tarot import db
 
-    key = cache_key(script, voice, cfg["model"])
+    key = cache_key(script, voice, cfg)
     path = cache_dir() / f"{key}.mp3"
     lock = await _lock_for(key)
     async with lock:

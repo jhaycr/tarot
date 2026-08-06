@@ -29,6 +29,14 @@
 	);
 	let decks = $state<DeckSummary[]>([]);
 	let viewDeck = $state('');
+	// Cards frame at the shown deck's true art ratio (measured on load; the
+	// global --card-ratio is the pre-load fallback). onload refires when the
+	// deck-art switcher changes src, so the ratio follows the selected deck.
+	let artRatio = $state(0);
+	function measureArt(e: Event) {
+		const img = e.currentTarget as HTMLImageElement;
+		if (img.naturalWidth && img.naturalHeight) artRatio = img.naturalWidth / img.naturalHeight;
+	}
 	let meta = $state<CardType[]>([]);
 	let notes = $state('');
 	let notesSaved = $state(true);
@@ -149,6 +157,7 @@
 								<div class="slot" class:overlay={drawn.position.cross}>
 									<button
 										class="faceup"
+										style:aspect-ratio={artRatio || null}
 										class:cross={drawn.position.cross}
 										onclick={() => (zoomedIdx = i)}
 									>
@@ -159,6 +168,7 @@
 												!(viewDeckInfo?.reversed_indices.includes(drawn.card.index) ?? false)}
 											alt={drawn.card.name}
 											loading="lazy"
+											onload={measureArt}
 										/>
 									</button>
 									{#if !drawn.position.cross}
@@ -179,9 +189,11 @@
 						src={api.cardImage(viewDeck, drawn.card.index,
 							drawn.reversed && (viewDeckInfo?.reversed_indices.includes(drawn.card.index) ?? false))}
 						alt={drawn.card.name}
+						style:aspect-ratio={artRatio || null}
 						class:reversed={drawn.reversed &&
 							!(viewDeckInfo?.reversed_indices.includes(drawn.card.index) ?? false)}
 						loading="lazy"
+						onload={measureArt}
 					/>
 					<small class="pos">{drawn.position.name}</small>
 					<small>{deckCardName(drawn.card.name, viewDeckInfo)}{drawn.reversed ? ' (rev)' : ''}</small>

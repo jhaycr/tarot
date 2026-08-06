@@ -773,7 +773,7 @@ def usage_summary(days: int) -> dict:
         ]
         daily = [
             dict(r) for r in con.execute(
-                "SELECT date(ts, 'unixepoch') AS day, count(*) AS calls,"
+                "SELECT date(ts, 'unixepoch', 'localtime') AS day, count(*) AS calls,"
                 " coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
                 " coalesce(sum(completion_tokens),0) AS completion_tokens,"
                 " coalesce(sum(CASE WHEN component='tts' THEN characters END),0) AS tts_characters,"
@@ -823,12 +823,15 @@ def tts_cache_upsert(hash_: str, size_bytes: int) -> None:
 
 
 def tts_cache_touch(hash_: str) -> None:
-    """Bump last_used_at, throttled to daily so replays don't churn writes."""
+    """Bump last_used_at, throttled to hourly so replays don't churn writes.
+
+    Hourly (not daily): a day-long throttle left today's most-played file
+    stuck at the front of the LRU eviction order all day."""
     now = int(time.time())
     with connect() as con:
         con.execute(
             "UPDATE tts_cache SET last_used_at = ? WHERE hash = ? AND last_used_at < ?",
-            (now, hash_, now - 86400),
+            (now, hash_, now - 3600),
         )
 
 

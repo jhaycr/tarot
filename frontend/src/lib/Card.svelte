@@ -28,10 +28,20 @@
 	} = $props();
 
 	const name = $derived(displayName ?? drawn.card.name);
+
+	// Frame the card at its art's true ratio (measured on load) — the global
+	// --card-ratio is only a pre-load fallback. Without this, decks whose
+	// cards aren't 600/1024 (P5R is ~0.50) get cropped by object-fit: cover.
+	let artRatio = $state(0);
+	function measure(e: Event) {
+		const img = e.currentTarget as HTMLImageElement;
+		if (img.naturalWidth && img.naturalHeight) artRatio = img.naturalWidth / img.naturalHeight;
+	}
 </script>
 
 <button
 	class="card"
+	style:aspect-ratio={artRatio || null}
 	class:flipped
 	class:cross
 	class:next={next && !flipped}
@@ -58,6 +68,7 @@
 				src={api.cardImage(deck, drawn.card.index, drawn.reversed && reversedArt)}
 				alt={drawn.card.name}
 				loading="lazy"
+				onload={measure}
 			/>
 		</div>
 	</div>

@@ -95,23 +95,27 @@ def status(user: str) -> dict:
     }
 
 
-def charge_reading(user: str, fingerprint: str) -> None:
+def charge_reading(user: str, fingerprint: str, legacy: str | None = None) -> None:
     """Charge one reading against today's cap, idempotently by fingerprint.
 
     A fingerprint that was already charged today always passes (resume,
-    re-interpret of the same draw). Raises LimitExceeded when the cap is
-    reached and the fingerprint is new.
+    re-interpret of the same draw). `legacy` is an alternate spelling of the
+    same draw (the pre-normalization hash) honored on lookup only — never
+    written. Raises LimitExceeded when the cap is reached and the
+    fingerprint is new.
     """
     from tarot import db
 
     if _exempt(user):
+        return
+    if legacy and db.reading_charge_exists(user, legacy, day=day_key()):
         return
     limit = config()["readings_per_day"]
     if not db.try_charge_reading(user, day_key(), fingerprint, limit):
         raise LimitExceeded("readings")
 
 
-def precheck_reading(user: str, fingerprint: str) -> None:
+def precheck_reading(user: str, fingerprint: str, legacy: str | None = None) -> None:
     """Raise if a NEW charge of this fingerprint would be blocked today.
 
     Charges nothing — for callers that must gate the cap up front but only
@@ -128,11 +132,13 @@ def precheck_reading(user: str, fingerprint: str) -> None:
     day = day_key()
     if db.reading_charge_exists(user, fingerprint, day=day):
         return
+    if legacy and db.reading_charge_exists(user, legacy, day=day):
+        return
     if db.readings_charged(user, day) >= limit:
         raise LimitExceeded("readings")
 
 
-def charge_reading_once(user: str, fingerprint: str) -> None:
+def charge_reading_once(user: str, fingerprint: str, legacy: str | None = None) -> None:
     """Charge unless this fingerprint was ever charged, on any day.
 
     The finish-what-you-started rule for readings that outlive their day:
@@ -145,7 +151,9 @@ def charge_reading_once(user: str, fingerprint: str) -> None:
         return
     if db.reading_charge_exists(user, fingerprint):
         return
-    charge_reading(user, fingerprint)
+    if legacy and db.reading_charge_exists(user, legacy):
+        return
+    charge_reading(user, fingerprint, legacy=legacy)
 
 
 def check_tokens(user: str) -> None:
