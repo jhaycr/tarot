@@ -325,6 +325,7 @@
 							deck={reading.deck}
 							displayName={cardName(drawn)}
 							hasBack={deckInfo?.has_back ?? false}
+							reversedArt={deckInfo?.reversed_indices.includes(drawn.card.index) ?? false}
 							next={i === nextIdx && streaming === null}
 							showTip={false}
 							bind:flipped={() => flipped[i], (v) => { if (v) flip(i); }}

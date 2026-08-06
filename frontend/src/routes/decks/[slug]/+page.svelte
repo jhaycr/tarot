@@ -303,6 +303,9 @@
 					<small>
 						{#if card.numeral}<span class="num">{card.numeral}</span>{/if}
 						{card.name}
+						{#if deck?.reversed_indices.includes(card.index)}<span
+								class="revart"
+								title="Has dedicated reversed art — flip it in the lightbox">⇅</span>{/if}
 					</small>
 				</button>
 			{/each}
@@ -321,11 +324,17 @@
 			onclose={() => (zoomed = null)}
 			onnav={nav}
 			books={companionSlugs}
+			reversedIndices={deck?.reversed_indices ?? []}
 		/>
 	{/key}
 {/if}
 
 <style>
+	.revart {
+		color: var(--accent);
+		margin-left: 0.15rem;
+	}
+
 	.tilecover {
 		display: flex;
 		gap: 0.4rem;

@@ -204,6 +204,7 @@
 										deck={reading.deck}
 										displayName={cardDisplayName(drawn)}
 										hasBack={deckInfo?.has_back ?? false}
+										reversedArt={deckInfo?.reversed_indices.includes(drawn.card.index) ?? false}
 										cross={drawn.position.cross ?? false}
 										next={i === nextIdx}
 										keywords={keywordsFor(drawn)}
@@ -265,6 +266,7 @@
 				onclose={() => (zoomedIdx = null)}
 				onnav={nav}
 				books={infoboxBooks}
+				reversedIndices={deckInfo?.reversed_indices ?? []}
 			/>
 		{/key}
 	{/if}

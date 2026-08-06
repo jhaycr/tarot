@@ -40,6 +40,11 @@ export interface DeckSummary {
 	can_unpublish: boolean;
 	/** Deck-curated companion book slugs (only the deck's owner edits). */
 	books: string[];
+	/** Indices (canonical + extras) with DEDICATED reversed art — rendered
+	 * upright instead of rotating the upright art. */
+	reversed_indices: number[];
+	/** Art cache-buster; rotates when any deck image changes. */
+	art_version: number;
 	/** Gallery tile shows the box cover instead of card 0. */
 	tile_cover: boolean;
 	can_edit_books: boolean;
@@ -304,6 +309,16 @@ async function errorFrom(res: Response, fallback: string): Promise<Error> {
 	return new Error(fallback);
 }
 
+// Deck art versions, learned from any decks() fetch: extras are position-
+// addressed, so art URLs must rotate when the deck's files change (see
+// DeckSummary.art_version). URLs built before the fetch resolves simply omit
+// the version — same behavior as before, corrected on the next render.
+const deckArtVersions: Record<string, number> = {};
+function artVersion(deck: string): string {
+	const v = deckArtVersions[deck];
+	return v ? `v=${v}` : '';
+}
+
 async function get<T>(url: string): Promise<T> {
 	const res = await fetch(url);
 	if (!res.ok) throw await errorFrom(res, `${url}: ${res.status}`);
@@ -474,7 +489,11 @@ export const api = {
 		return URL.createObjectURL(await res.blob());
 	},
 	cards: () => get<Card[]>('/api/cards'),
-	decks: () => get<DeckSummary[]>('/api/decks'),
+	decks: async () => {
+		const ds = await get<DeckSummary[]>('/api/decks');
+		for (const d of ds) deckArtVersions[d.slug] = d.art_version;
+		return ds;
+	},
 	spreads: () => get<Spread[]>('/api/spreads'),
 	draw: (deck: string, spread: string, reversals: boolean, question?: string, includeExtras = false) =>
 		send<Reading>('POST', '/api/draw', {
@@ -503,9 +522,18 @@ export const api = {
 	setSharing: (id: number, visibility: Visibility, grantees: string[] = []) =>
 		send<SavedReading>('PUT', `/api/readings/${id}/sharing`, { visibility, grantees }),
 	deleteReading: (id: number) => send<{ deleted: number }>('DELETE', `/api/readings/${id}`),
-	cardImage: (deck: string, index: number) => `/api/decks/${deck}/cards/${index}`,
-	backImage: (deck: string) => `/api/decks/${deck}/back`,
-	coverImage: (deck: string) => `/api/decks/${deck}/cover`
+	cardImage: (deck: string, index: number, reversed = false) => {
+		const q = [reversed ? 'reversed=1' : '', artVersion(deck)].filter(Boolean).join('&');
+		return `/api/decks/${deck}/cards/${index}${q ? `?${q}` : ''}`;
+	},
+	backImage: (deck: string) => {
+		const v = artVersion(deck);
+		return `/api/decks/${deck}/back${v ? `?${v}` : ''}`;
+	},
+	coverImage: (deck: string) => {
+		const v = artVersion(deck);
+		return `/api/decks/${deck}/cover${v ? `?${v}` : ''}`;
+	}
 };
 
 let cardsCache: Card[] | null = null;

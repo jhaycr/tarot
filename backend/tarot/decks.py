@@ -74,11 +74,22 @@ class Deck:
     # gallery tile shows the box cover instead of card 0 (owner's choice)
     tile_cover: bool = False
     cards: dict[int, Path] = field(default_factory=dict)
+    # dedicated reversed-art variants (cards/NNr.ext for canonical indices,
+    # extras/<stem>-reversed.ext paired to a base extra). The card's reversed
+    # ORIENTATION is unchanged — this is alternate art drawn for the reversal,
+    # rendered upright instead of rotating the upright art.
+    reversed_cards: dict[int, Path] = field(default_factory=dict)
     # deck-specific cards beyond the canonical 78 (e.g. invented majors),
     # addressed as index 78+position: [(index, display name, path), ...]
     extras: list[tuple[int, str, Path]] = field(default_factory=list)
     back: Path | None = None
     cover: Path | None = None  # box/cover art, shown in the gallery but never drawn
+    # cache-buster for art URLs: newest mtime across the deck's images. Extras
+    # are POSITION-addressed (78+i by sorted filename), so adding/removing an
+    # extra reshuffles which image lives at an index — long-cached URLs then
+    # show the wrong art under the right name. The version in the URL rotates
+    # whenever any file changes, so caches converge on their own.
+    art_version: int = 0
 
     @property
     def complete(self) -> bool:
@@ -95,6 +106,9 @@ class Deck:
             if i == index:
                 return path
         return None
+
+    def reversed_image_for(self, index: int) -> Path | None:
+        return self.reversed_cards.get(index)
 
 
 def _load_deck(deck_path: Path, owner: str | None = None, tier: str = STAGING) -> Deck | None:
@@ -133,17 +147,35 @@ def _load_deck(deck_path: Path, owner: str | None = None, tier: str = STAGING) -
             stem = f.stem
             if stem.isdigit() and 0 <= int(stem) <= 77:
                 deck.cards[int(stem)] = f
+            elif stem.endswith("r") and stem[:-1].isdigit() and 0 <= int(stem[:-1]) <= 77:
+                deck.reversed_cards[int(stem[:-1])] = f
     extras_dir = deck_path / "extras"
     if extras_dir.is_dir():
         names = manifest.get("extras") or {}  # optional {file-stem: display name}
-        files = sorted(
+        all_files = sorted(
             f for f in extras_dir.iterdir()
             if f.is_file() and f.suffix.lower() in IMAGE_EXTS
         )
+        # <stem>-reversed.<ext> pairs with the base extra <stem> rather than
+        # becoming its own extra; unpaired -reversed files fall through and
+        # stay standalone extras (nothing silently disappears)
+        rev = {f.stem[: -len("-reversed")]: f for f in all_files
+               if f.stem.endswith("-reversed")}
+        base = [f for f in all_files
+                if not (f.stem.endswith("-reversed") and f.stem[: -len("-reversed")]
+                        in {b.stem for b in all_files})]
+        # the manifest's extras mapping is an ORDERED dict: its key order is
+        # the display order (decks like Wings of Rebellion have a lore order —
+        # Faith, Consultant, Hope, Apostle...); unmapped files sort after, by name
+        order = {stem: i for i, stem in enumerate(names)}
+        base.sort(key=lambda f: (order.get(f.stem, len(order)), f.stem))
         deck.extras = [
             (78 + i, names.get(f.stem) or f.stem.replace("-", " ").replace("_", " ").title(), f)
-            for i, f in enumerate(files)
+            for i, f in enumerate(base)
         ]
+        for i, _, f in deck.extras:
+            if f.stem in rev:
+                deck.reversed_cards[i] = rev[f.stem]
     for attr in ("back", "cover"):
         named = manifest.get(attr)
         if named and (deck_path / named).is_file():
@@ -154,6 +186,15 @@ def _load_deck(deck_path: Path, owner: str | None = None, tier: str = STAGING) -
             if candidate.is_file():
                 setattr(deck, attr, candidate)
                 break
+    newest = manifest_path.stat().st_mtime
+    for path in [*deck.cards.values(), *deck.reversed_cards.values(),
+                 *(f for _, _, f in deck.extras), deck.back, deck.cover]:
+        if path is not None:
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                pass
+    deck.art_version = int(newest)
     return deck
 
 

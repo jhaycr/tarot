@@ -65,11 +65,20 @@ def _tokens(stem: str) -> list[str]:
 
 
 def classify(stem: str) -> int | str | None:
-    """Canonical index, 'back', 'cover', or None if unrecognized."""
+    """Canonical index, 'back', 'cover', ('reversed', index) for dedicated
+    reversed-art variants, or None if unrecognized."""
     tokens = _tokens(stem)
     alpha = [t for t in tokens if t.isalpha() and t not in NOISE_TOKENS]
     digits = [t for t in tokens if t.isdigit()]
 
+    # "JusticeReversed" / "11 reversed" = that card's dedicated reversed ART —
+    # must be checked before the back keywords, which also match "reverse"
+    if any(t in ("reversed", "reverse") for t in alpha):
+        rest = [t for t in alpha if t not in ("reversed", "reverse")]
+        if rest or digits:
+            sub = classify("-".join(rest + digits))
+            if isinstance(sub, int):
+                return ("reversed", sub)
     if any(t in ("back", "reverse", "reverso") for t in alpha):
         return "back"
     if any(t in ("box", "cover", "lid") for t in alpha):
@@ -179,9 +188,11 @@ def classify_heading(text: str) -> tuple[int | None, float]:
     return None, 0.0
 
 
-def map_filenames(stems: list[str]) -> tuple[dict[int, str], str | None, str | None, list[str]]:
-    """Returns (index->stem, back stem, cover stem, unrecognized/conflicting stems)."""
+def map_filenames(stems: list[str]) -> tuple[dict[int, str], str | None, str | None, list[str], dict[int, str]]:
+    """Returns (index->stem, back stem, cover stem, unrecognized/conflicting
+    stems, reversed-variant index->stem)."""
     mapping: dict[int, str] = {}
+    reversed_mapping: dict[int, str] = {}
     back: str | None = None
     cover: str | None = None
     problems: list[str] = []
@@ -193,6 +204,9 @@ def map_filenames(stems: list[str]) -> tuple[dict[int, str], str | None, str | N
         if not alpha and len(digits) >= 1:
             numeric[stem] = int(digits[0])
         kind = classify(stem)
+        if isinstance(kind, tuple) and kind[0] == "reversed":
+            reversed_mapping.setdefault(kind[1], stem)
+            continue
         if kind == "back":
             back = back or stem
         elif kind == "cover":
@@ -211,4 +225,4 @@ def map_filenames(stems: list[str]) -> tuple[dict[int, str], str | None, str | N
     if 0 not in mapping and len(numeric) >= 22 and min(numeric.values()) == 1 and max(numeric.values()) <= 79:
         mapping = {n - 1: stem for stem, n in numeric.items() if 0 <= n - 1 <= 77}
         problems = [f"{stem}: number {n} out of range" for stem, n in numeric.items() if n - 1 > 77]
-    return mapping, back, cover, problems
+    return mapping, back, cover, problems, reversed_mapping

@@ -153,8 +153,10 @@
 										onclick={() => (zoomedIdx = i)}
 									>
 										<img
-											src={api.cardImage(viewDeck, drawn.card.index)}
-											class:reversed={drawn.reversed}
+											src={api.cardImage(viewDeck, drawn.card.index,
+												drawn.reversed && (viewDeckInfo?.reversed_indices.includes(drawn.card.index) ?? false))}
+											class:reversed={drawn.reversed &&
+												!(viewDeckInfo?.reversed_indices.includes(drawn.card.index) ?? false)}
 											alt={drawn.card.name}
 											loading="lazy"
 										/>
@@ -174,9 +176,11 @@
 			{#each reading.cards as drawn, i (i)}
 				<button class="drawn" onclick={() => (zoomedIdx = i)}>
 					<img
-						src={api.cardImage(viewDeck, drawn.card.index)}
+						src={api.cardImage(viewDeck, drawn.card.index,
+							drawn.reversed && (viewDeckInfo?.reversed_indices.includes(drawn.card.index) ?? false))}
 						alt={drawn.card.name}
-						class:reversed={drawn.reversed}
+						class:reversed={drawn.reversed &&
+							!(viewDeckInfo?.reversed_indices.includes(drawn.card.index) ?? false)}
 						loading="lazy"
 					/>
 					<small class="pos">{drawn.position.name}</small>
@@ -248,6 +252,7 @@
 				onclose={() => (zoomedIdx = null)}
 				onnav={nav}
 				books={infoboxBooks}
+				reversedIndices={viewDeckInfo?.reversed_indices ?? []}
 			/>
 		{/key}
 	{/if}

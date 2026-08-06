@@ -226,6 +226,8 @@ def list_decks(user: User):
             "can_unpublish": d.tier == decks_mod.LIBRARY
             and (d.published_by == user or is_admin(user)),
             "books": d.books,
+            "reversed_indices": sorted(d.reversed_cards.keys()),
+            "art_version": d.art_version,
             "tile_cover": d.tile_cover,
             "can_edit_books": _controls_deck(d, user),
             "suggested_books": books_mod.suggest_books(d, visible_books)
@@ -236,9 +238,9 @@ def list_decks(user: User):
 
 
 @app.get("/api/decks/{slug}/cards/{index}")
-def card_image(slug: str, index: int, user: User):
+def card_image(slug: str, index: int, user: User, reversed: bool = False):
     deck = get_deck_or_404(slug, user)
-    path = deck.image_for(index)
+    path = deck.reversed_image_for(index) if reversed else deck.image_for(index)
     if not path:
         raise HTTPException(404, f"card {index} missing from deck '{slug}'")
     return FileResponse(path, headers=IMAGE_CACHE)
@@ -268,6 +270,11 @@ def export_deck(slug: str, user: User):
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:  # images don't recompress
         for index, path in sorted(deck.cards.items()):
             z.write(path, f"cards/{index:02d}{path.suffix.lower()}")
+        for index, path in sorted(deck.reversed_cards.items()):
+            if index < 78:
+                z.write(path, f"cards/{index:02d}r{path.suffix.lower()}")
+            else:
+                z.write(path, f"extras/{path.name}")
         if deck.back:
             z.write(deck.back, f"back{deck.back.suffix.lower()}")
         if deck.cover:
@@ -437,7 +444,7 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
         else:
             entries.setdefault(stem, entry)
 
-    mapping, back_stem, cover_stem, problems = importer.map_filenames(list(entries))
+    mapping, back_stem, cover_stem, problems, reversed_mapping = importer.map_filenames(list(entries))
     complete = len(mapping) == 78 or (len(mapping) == 22 and all(i < 22 for i in mapping))
     if not mapping and len(entries) in (78, 22):
         # unrecognizable names but the right count: assign in alphabetical order
@@ -455,6 +462,10 @@ def upload_deck(user: User, file: UploadFile = File(...), name: str = Form(...),
         entry = entries[stem]
         ext = os.path.splitext(entry)[1].lower()
         (cards_dir / f"{index:02d}{ext}").write_bytes(zf.read(entry))
+    for index, stem in reversed_mapping.items():
+        entry = entries[stem]
+        ext = os.path.splitext(entry)[1].lower()
+        (cards_dir / f"{index:02d}r{ext}").write_bytes(zf.read(entry))
     if back_stem:
         entry = entries[back_stem]
         ext = os.path.splitext(entry)[1].lower()

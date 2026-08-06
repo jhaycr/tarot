@@ -10,7 +10,8 @@
 		next = false,
 		keywords = null,
 		showTip = true,
-		displayName = null
+		displayName = null,
+		reversedArt = false
 	}: {
 		drawn: DrawnCard;
 		deck: string;
@@ -21,6 +22,9 @@
 		keywords?: string | null;
 		showTip?: boolean;
 		displayName?: string | null;
+		/** Deck has DEDICATED reversed art for this card: render it upright
+		 * instead of rotating the upright art. Orientation semantics unchanged. */
+		reversedArt?: boolean;
 	} = $props();
 
 	const name = $derived(displayName ?? drawn.card.name);
@@ -31,7 +35,7 @@
 	class:flipped
 	class:cross
 	class:next={next && !flipped}
-	class:reversed={drawn.reversed}
+	class:reversed={drawn.reversed && !reversedArt}
 	onclick={(e) => {
 		if (!flipped) {
 			// a flip is just a flip — don't let it bubble into selection handlers
@@ -50,7 +54,11 @@
 			{/if}
 		</div>
 		<div class="face front">
-			<img src={api.cardImage(deck, drawn.card.index)} alt={drawn.card.name} loading="lazy" />
+			<img
+				src={api.cardImage(deck, drawn.card.index, drawn.reversed && reversedArt)}
+				alt={drawn.card.name}
+				loading="lazy"
+			/>
 		</div>
 	</div>
 	{#if !flipped}

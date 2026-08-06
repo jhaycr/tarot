@@ -164,7 +164,7 @@ def import_dir(
     for f in sorted(src.iterdir()):
         if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
             files.setdefault(f.stem, f)
-    mapping, back_stem, cover_stem, problems = map_filenames(list(files))
+    mapping, back_stem, cover_stem, problems, reversed_mapping = map_filenames(list(files))
     for p in problems:
         print(f"  ! {p}", file=sys.stderr)
     if len(mapping) < 22:
@@ -184,6 +184,14 @@ def import_dir(
             data, new_ext = shrink(data, max_width)
             ext = new_ext or ext
         (cards_dir / f"{index:02d}{ext}").write_bytes(data)
+    for index, stem in sorted(reversed_mapping.items()):
+        f = files[stem]
+        data = f.read_bytes()
+        ext = f.suffix.lower()
+        if max_width:
+            data, new_ext = shrink(data, max_width)
+            ext = new_ext or ext
+        (cards_dir / f"{index:02d}r{ext}").write_bytes(data)
     if back_stem:
         f = files[back_stem]
         (deck_dir / f"back{f.suffix.lower()}").write_bytes(f.read_bytes())
