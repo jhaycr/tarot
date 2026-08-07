@@ -10,10 +10,12 @@ request header, `readings.owner` strings, and directories under data/users/ —
 and a username existed only as a side effect of having saved something.
 """
 
+import queue
+import threading
 import time
 
 from tarot import db
-from tarot.auth import FALLBACK_USER, is_admin
+from tarot.auth import FALLBACK_USER, env_is_admin
 
 # Refresh last_seen at most this often, so ordinary browsing doesn't write on
 # every request.
@@ -36,27 +38,74 @@ def _row(r) -> dict:
     return d
 
 
+# touch() is BEST-EFFORT and asynchronous: the 2026-08-03 storage stall on
+# neo hung every endpoint on this per-request bookkeeping write while the
+# disk was unresponsive. A single daemon worker drains a small queue; when
+# the queue is full or the write fails, the touch is simply dropped —
+# last-seen freshness is advisory and never worth availability.
+_touch_queue: "queue.Queue[tuple[str, str | None]]" = queue.Queue(maxsize=256)
+_touch_worker_started = False
+_touch_worker_guard = threading.Lock()
+
+
+def _touch_worker() -> None:
+    while True:
+        username, display = _touch_queue.get()
+        try:
+            touch_sync(username, display)
+        except Exception:
+            pass
+        finally:
+            _touch_queue.task_done()
+
+
 def touch(username: str, display: str | None = None) -> None:
+    """Queue a presence update; never blocks and never raises."""
+    global _touch_worker_started
+    if not _touch_worker_started:
+        with _touch_worker_guard:
+            if not _touch_worker_started:
+                threading.Thread(target=_touch_worker, name="users-touch", daemon=True).start()
+                _touch_worker_started = True
+    try:
+        _touch_queue.put_nowait((username, display))
+    except queue.Full:
+        pass
+
+
+def flush_touches() -> None:
+    """Block until queued touches are applied — for tests and callers that
+    need read-your-write on the registry."""
+    _touch_queue.join()
+
+
+def touch_sync(username: str, display: str | None = None) -> None:
     """Record that `username` is here. Cheap on the common path: a primary-key
-    read, and a write only when the row is new, stale, or renamed."""
+    read, and a write only when the row is new, stale, or renamed.
+
+    display=None means "no identity source on this request" (cookie-session
+    traffic carries no header) — it must only refresh last_seen, never
+    rewrite display_name, or every session request would clobber the name
+    learned at login back to the bare username."""
     now = int(time.time())
-    name = (display or username)[:64]
     with db.connect() as con:
         row = con.execute(
             "SELECT display_name, last_seen FROM users WHERE username = ?", (username,)
         ).fetchone()
         if row is None:
+            name = (display or username)[:64]
             con.execute(
                 "INSERT INTO users (username, display_name, kind, active, is_admin,"
                 " first_seen, last_seen) VALUES (?,?,?,1,?,?,?)"
                 " ON CONFLICT(username) DO NOTHING",
-                (username, name, kind_for(username), int(is_admin(username)), now, now),
+                (username, name, kind_for(username), int(env_is_admin(username)), now, now),
             )
             return
-        if now - row["last_seen"] >= TOUCH_INTERVAL or row["display_name"] != name:
+        renamed = display is not None and row["display_name"] != display[:64]
+        if now - row["last_seen"] >= TOUCH_INTERVAL or renamed:
             con.execute(
                 "UPDATE users SET last_seen = ?, display_name = ? WHERE username = ?",
-                (now, name, username),
+                (now, (display[:64] if display is not None else row["display_name"]), username),
             )
 
 
@@ -64,6 +113,45 @@ def get(username: str) -> dict | None:
     with db.connect() as con:
         row = con.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         return _row(row) if row else None
+
+
+def is_admin(username: str) -> bool:
+    """Admin is DATA (users.is_admin), managed in-app. The TAROT_ADMIN_USERS
+    env var only seeds new rows (and the _m9 sweep) — it is not consulted at
+    request time, so revoking admin in the UI actually revokes it. Falls back
+    to the env seed for identities whose row hasn't landed yet (the touch
+    queue is async)."""
+    row = get(username)
+    if row is None:
+        return env_is_admin(username)
+    return row["is_admin"] and row["active"]
+
+
+def active_admin_exists() -> bool:
+    with db.connect() as con:
+        return con.execute(
+            "SELECT 1 FROM users WHERE is_admin = 1 AND active = 1 LIMIT 1"
+        ).fetchone() is not None
+
+
+def other_active_admin_exists(username: str) -> bool:
+    """Is there an active admin BESIDES `username`? (last-admin guard)"""
+    with db.connect() as con:
+        return con.execute(
+            "SELECT 1 FROM users WHERE is_admin = 1 AND active = 1 AND username != ? LIMIT 1",
+            (username,),
+        ).fetchone() is not None
+
+
+def set_admin(username: str, value: bool) -> dict | None:
+    """Toggle the admin flag. Refuses to demote the LAST active admin —
+    someone must always hold the keys."""
+    if not value and not other_active_admin_exists(username):
+        return None
+    with db.connect() as con:
+        con.execute("UPDATE users SET is_admin = ? WHERE username = ?",
+                    (int(value), username))
+    return get(username)
 
 
 def list_people(include_inactive: bool = False) -> list[dict]:

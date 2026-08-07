@@ -13,6 +13,8 @@ dependencies = [
     "cryptography>=42.0",
     "python-multipart>=0.0.9",
     "pypdfium2>=4",  # guidebook import (text + page rendering); slicer PDFs
+    "authlib>=1.3",       # OIDC relying party (auth.mode: oidc)
+    "itsdangerous>=2.1",  # starlette SessionMiddleware (OIDC handshake state)
 ]
 
 [project.optional-dependencies]

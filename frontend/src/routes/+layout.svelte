@@ -33,6 +33,16 @@
 	function isActive(href: string): boolean {
 		return href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
 	}
+
+	async function doLogout() {
+		try {
+			const r = await fetch('/auth/logout', { method: 'POST' });
+			const out = await r.json();
+			window.location.href = out.logout_url || '/';
+		} catch {
+			window.location.href = '/';
+		}
+	}
 </script>
 
 <svelte:head>
@@ -55,7 +65,11 @@
 				<a class="user" href="/account" title="Your account — identity, shares, published decks"
 					>☾ {user}</a
 				>
-				{#if logoutUrl}
+				{#if logoutUrl === '/auth/logout'}
+					<!-- OIDC session: the app destroys it (POST), then we follow the
+					     IdP's end-session URL so the SSO session ends too. -->
+					<button class="logout" onclick={doLogout} title="Sign out">Log out</button>
+				{:else if logoutUrl}
 					<a class="logout" href={logoutUrl} data-sveltekit-reload title="Sign out">Log out</a>
 				{/if}
 			</span>
@@ -135,6 +149,8 @@
 	}
 
 	.logout {
+		all: unset;
+		cursor: pointer;
 		color: var(--text-dim);
 		font-size: 0.85rem;
 		border-bottom: 1px solid transparent;

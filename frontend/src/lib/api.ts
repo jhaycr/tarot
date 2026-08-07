@@ -314,14 +314,29 @@ export interface TtsSettings {
 
 /** The server's human-readable `detail` when there is one ("Daily reading
  * limit reached — resets at midnight."), else a terse status fallback. */
+export class ApiError extends Error {
+	status: number;
+	constructor(message: string, status: number) {
+		super(message);
+		this.status = status;
+	}
+}
+
+/** Signed out (OIDC mode): bounce through the app's login. /api/me is exempt
+ * so the shell can render its signed-in/out state instead of looping. */
+function redirectToLogin(): void {
+	window.location.href =
+		'/auth/login?next=' + encodeURIComponent(window.location.pathname + window.location.search);
+}
+
 async function errorFrom(res: Response, fallback: string): Promise<Error> {
 	try {
 		const detail = (await res.json())?.detail;
-		if (typeof detail === 'string' && detail) return new Error(detail);
+		if (typeof detail === 'string' && detail) return new ApiError(detail, res.status);
 	} catch {
 		// non-JSON body — fall through
 	}
-	return new Error(fallback);
+	return new ApiError(fallback, res.status);
 }
 
 // Deck art versions, learned from any decks() fetch: extras are position-
@@ -336,6 +351,7 @@ function artVersion(deck: string): string {
 
 async function get<T>(url: string): Promise<T> {
 	const res = await fetch(url);
+	if (res.status === 401 && url !== '/api/me') redirectToLogin();
 	if (!res.ok) throw await errorFrom(res, `${url}: ${res.status}`);
 	return res.json();
 }
@@ -346,6 +362,7 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
 		headers: { 'content-type': 'application/json' },
 		body: body === undefined ? undefined : JSON.stringify(body)
 	});
+	if (res.status === 401) redirectToLogin();
 	if (!res.ok) throw await errorFrom(res, `${method} ${url}: ${res.status}`);
 	return res.json();
 }

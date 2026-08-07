@@ -5,13 +5,13 @@ import { build, files, version } from '$service-worker';
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
-const APP_CACHE = `tarotarium-app-${version}`;
-const CARD_CACHE = 'tarotarium-cards';
+const APP_CACHE = `tarotarium-v2-app-${version}`;
+const CARD_CACHE = 'tarotarium-v2-cards';
 // Versioned: it holds cached navigations, so an unversioned one can serve an
 // old app shell pointing at build assets that no longer exist. Card art
-// (CARD_CACHE) is deliberately not versioned — the images don't change, and
-// re-downloading a deck on every release would be wasteful.
-const RUNTIME_CACHE = `tarotarium-runtime-${version}`;
+// (CARD_CACHE) is deliberately not versioned — art URLs carry their own
+// ?v= cache-buster, and re-downloading a deck on every release is wasteful.
+const RUNTIME_CACHE = `tarotarium-v2-runtime-${version}`;
 const ASSETS = [...build, ...files];
 
 sw.addEventListener('install', (event) => {
@@ -30,10 +30,14 @@ sw.addEventListener('activate', (event) => {
 			.then((keys) =>
 				Promise.all(
 					keys
+						// drop every tarotarium cache that isn't one of ours — including
+						// all pre-v2 prefixes (auth-era cache contract change)
 						.filter(
 							(k) =>
-								(k.startsWith('tarotarium-app-') && k !== APP_CACHE) ||
-								(k.startsWith('tarotarium-runtime') && k !== RUNTIME_CACHE)
+								k.startsWith('tarotarium-') &&
+								k !== APP_CACHE &&
+								k !== CARD_CACHE &&
+								k !== RUNTIME_CACHE
 						)
 						.map((k) => caches.delete(k))
 				)
@@ -51,14 +55,18 @@ sw.addEventListener('fetch', (event) => {
 	const url = new URL(event.request.url);
 	if (url.origin !== sw.location.origin) return;
 
-	// card images: cache-first, they never change for a given deck
+	// the OIDC handshake must never be intercepted or cached — redirects,
+	// cookies and one-time state all live here
+	if (url.pathname.startsWith('/auth/')) return;
+
+	// card images: cache-first; the URL's ?v= art-version busts on change
 	if (isCardImage(url)) {
 		event.respondWith(
 			caches.open(CARD_CACHE).then(async (cache) => {
 				const hit = await cache.match(event.request);
 				if (hit) return hit;
 				const resp = await fetch(event.request);
-				if (resp.ok) cache.put(event.request, resp.clone());
+				if (resp.ok && !resp.redirected) cache.put(event.request, resp.clone());
 				return resp;
 			})
 		);
@@ -69,13 +77,19 @@ sw.addEventListener('fetch', (event) => {
 	if (url.pathname.startsWith('/api/')) return;
 
 	// app shell + navigations: cache-first for build assets, network-first with
-	// cached fallback for everything else (offline support)
+	// cached fallback for everything else (offline support). Never cache a
+	// redirected or non-200 response — a cached login redirect would wedge
+	// the app shell.
 	event.respondWith(
 		caches.match(event.request).then(async (hit) => {
 			if (hit) return hit;
 			try {
 				const resp = await fetch(event.request);
-				if (resp.ok && (event.request.mode === 'navigate' || ASSETS.includes(url.pathname))) {
+				if (
+					resp.ok &&
+					!resp.redirected &&
+					(event.request.mode === 'navigate' || ASSETS.includes(url.pathname))
+				) {
 					const cache = await caches.open(RUNTIME_CACHE);
 					cache.put(event.request, resp.clone());
 				}

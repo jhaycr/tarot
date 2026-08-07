@@ -139,5 +139,17 @@ def llm_api_key() -> str | None:
     return _section_api_key("llm")
 
 
+def auth_client_secret() -> str | None:
+    """OIDC client secret from the file: inline `client_secret` or the env
+    var named by `client_secret_env`. None = file doesn't own it."""
+    inline = get("auth", "client_secret")
+    if inline:
+        return str(inline)
+    env_name = get("auth", "client_secret_env")
+    if env_name:
+        return os.environ.get(str(env_name), "")
+    return None
+
+
 def tts_api_key() -> str | None:
     return _section_api_key("tts")

@@ -1,7 +1,9 @@
 """Reading journal in SQLite (one file in the data dir)."""
 
 import json
+import os
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -241,6 +243,32 @@ def _m_reading_books(con: sqlite3.Connection) -> None:
     con.execute("ALTER TABLE readings ADD COLUMN books TEXT NOT NULL DEFAULT '[]'")
 
 
+def _m_sessions(con: sqlite3.Connection) -> None:
+    """App-local login sessions (auth-track Step 3). Only the sha256 of the
+    cookie token is stored; id_token (encrypted) is kept solely for
+    RP-initiated logout. Also a one-time is_admin seed sweep: rows created
+    before this migration got is_admin from the env var at INSERT time, so
+    re-seed from the CURRENT env value to catch users added to
+    TAROT_ADMIN_USERS after their row appeared (env var becomes inert once
+    admin is managed in-app)."""
+    con.execute(
+        """
+        CREATE TABLE sessions (
+            token_hash   TEXT PRIMARY KEY,
+            username     TEXT NOT NULL REFERENCES users(username),
+            created_at   INTEGER NOT NULL,
+            last_seen_at INTEGER NOT NULL,
+            expires_at   INTEGER NOT NULL,
+            id_token     TEXT
+        )
+        """
+    )
+    con.execute("CREATE INDEX sessions_user ON sessions(username)")
+    admins = [a.strip() for a in os.environ.get("TAROT_ADMIN_USERS", "").split(",") if a.strip()]
+    for name in admins:
+        con.execute("UPDATE users SET is_admin = 1 WHERE username = ?", (name,))
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m1_user_registry),
     (2, _m2_reading_visibility),
@@ -250,6 +278,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (6, _m6_usage_and_user_settings),
     (7, _m7_reading_charges),
     (8, _m_reading_books),
+    (9, _m_sessions),
 ]
 
 
@@ -317,15 +346,27 @@ def _migrate(con: sqlite3.Connection) -> None:
         con.isolation_level = prior
 
 
+# Schema creation + migration run once per DB per process, under a lock:
+# concurrent first connections (startup threads, the async touch worker)
+# would otherwise race between reading schema_version and running DDL.
+_migrate_lock = threading.Lock()
+_migrated_paths: set[str] = set()
+
+
 @contextmanager
 def connect():
     data_dir().mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(data_dir() / "journal.db")
+    path = data_dir() / "journal.db"
+    con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=ON")
-    con.executescript(SCHEMA)
-    _migrate(con)
+    if str(path) not in _migrated_paths:
+        with _migrate_lock:
+            if str(path) not in _migrated_paths:
+                con.executescript(SCHEMA)
+                _migrate(con)
+                _migrated_paths.add(str(path))
     try:
         yield con
         con.commit()

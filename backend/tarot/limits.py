@@ -66,7 +66,7 @@ def midnight_ts(now: float | None = None) -> int:
 
 
 def _exempt(user: str) -> bool:
-    from tarot.auth import is_admin
+    from tarot.users import is_admin
 
     return is_admin(user)
 

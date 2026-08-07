@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { api, type DeckSummary, type LimitsStatus, type Spread } from '$lib/api';
+	import { api, ApiError, type DeckSummary, type LimitsStatus, type Spread } from '$lib/api';
 	import {
 		prefDeck,
 		prefSpread,
@@ -72,6 +72,7 @@
 		setExtrasPref(prefDeck.value, v);
 	}
 
+	let signedOut = $state(false);
 	$effect(() => {
 		api
 			.me()
@@ -80,7 +81,10 @@
 				limitsStatus = m.limits;
 				hideDrafts = m.settings.hide_draft_decks;
 			})
-			.catch(() => {});
+			.catch((e) => {
+				// OIDC mode, no session: show the sign-in card instead of pickers
+				if ((e as ApiError)?.status === 401) signedOut = true;
+			});
 		Promise.all([api.decks(), api.spreads()])
 			.then(([d, s]) => {
 				decks = d;
@@ -126,6 +130,13 @@
 	}
 </script>
 
+{#if signedOut}
+	<section class="setup signin">
+		<h1>✦ Tarotarium</h1>
+		<p class="dim">Sign in to draw cards, keep a journal, and pick up your readings on any device.</p>
+		<a class="primary signin-btn" href="/auth/login">Sign in</a>
+	</section>
+{:else}
 <section class="setup">
 	<h1>New Reading</h1>
 
@@ -259,6 +270,7 @@
 		</p>
 	{/if}
 </section>
+{/if}
 
 <style>
 	.setup {
@@ -267,6 +279,24 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1.4rem;
+	}
+
+	.signin {
+		align-items: center;
+		text-align: center;
+		margin-top: 4rem;
+	}
+
+	.signin-btn {
+		display: inline-block;
+		padding: 0.6rem 2.2rem;
+		border: 1px solid var(--gold);
+		border-radius: 8px;
+		color: var(--gold-bright);
+	}
+
+	.signin-btn:hover {
+		background: var(--bg-card);
 	}
 
 	.mode {

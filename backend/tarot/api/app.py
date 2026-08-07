@@ -14,22 +14,22 @@ from typing import Annotated
 
 import yaml
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from tarot import bookimport, config as cfgfile, crypto, db, dedupe, importer, interpret as interp, limits, sse, tts, users
+from tarot import auth, bookimport, config as cfgfile, crypto, db, dedupe, importer, interpret as interp, limits, sessions, sse, tts, users
 from tarot import books as books_mod
 from tarot.books import BookConflict, BookForbidden, user_books_dir
 from tarot.auth import (
     LOGOUT_URL,
     current_user,
     display_name,
-    is_admin,
     is_authenticated,
 )
+from tarot.users import is_admin
 from tarot.cards import CARDS
 from tarot import decks as decks_mod
 from tarot.decks import (
@@ -43,6 +43,49 @@ from tarot.spreads import SPREADS, SPREADS_BY_SLUG
 
 app = FastAPI(title="Tarotarium", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
+# OIDC handshake state (state/nonce/next) only — a per-boot secret is fine
+# because the cookie lives minutes; a restart mid-login just means retrying.
+from starlette.middleware.sessions import SessionMiddleware  # noqa: E402
+
+app.add_middleware(
+    SessionMiddleware, secret_key=secrets.token_hex(32),
+    session_cookie="tarot_oauth", max_age=600, same_site="lax",
+)
+
+
+@app.middleware("http")
+async def csrf_guard(request: Request, call_next):
+    """Cross-origin write protection for cookie-auth'd requests (design
+    §4.7). SameSite=Lax alone is insufficient — sibling subdomains are
+    "same-site". Browsers always send Sec-Fetch-Site; when it's absent we
+    fall back to Origin; requests carrying neither (curl, scripts, the
+    TestClient) aren't browsers and can't be CSRF'd."""
+    if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path.startswith("/api/"):
+        site = request.headers.get("sec-fetch-site")
+        if site is not None:
+            if site not in ("same-origin", "none"):
+                return JSONResponse(status_code=403,
+                                    content={"detail": "cross-origin request refused"})
+        else:
+            origin = request.headers.get("origin")
+            if origin:
+                expected = f"{request.url.scheme}://{request.url.netloc}"
+                if origin.rstrip("/") != expected:
+                    return JSONResponse(status_code=403,
+                                        content={"detail": "cross-origin request refused"})
+    return await call_next(request)
+
+
+from tarot import oidc as oidc_mod  # noqa: E402
+
+app.include_router(oidc_mod.router)
+
+
+@app.on_event("startup")
+def _admin_bootstrap() -> None:
+    oidc_mod.ensure_setup_token()
+
+
 # Release version, threaded in from the git tag at image build time
 # (Dockerfile ARG -> ENV). Unset in local/dev builds -> "dev".
 VERSION = os.getenv("TAROT_VERSION", "dev")
@@ -51,6 +94,19 @@ VERSION = os.getenv("TAROT_VERSION", "dev")
 @app.on_event("startup")
 def _dedupe_existing() -> None:
     threading.Thread(target=dedupe.dedupe_all, daemon=True).start()
+
+
+@app.on_event("startup")
+def _reap_sessions() -> None:
+    def loop() -> None:
+        while True:
+            try:
+                sessions.reap()
+            except Exception:
+                pass  # bookkeeping; never a reason to crash
+            time.sleep(86400)
+
+    threading.Thread(target=loop, name="session-reaper", daemon=True).start()
 
 IMAGE_CACHE = {"Cache-Control": "public, max-age=604800"}
 
@@ -66,16 +122,41 @@ PKT: dict[str, dict] = json.loads(
 def resolve_user(request: Request) -> str:
     """Identity for the request, registering the caller on first sight.
 
-    Every route resolves identity through this one dependency, so the registry
-    stays complete without any route knowing about it. auth.py deliberately
-    stays free of database imports; the upsert belongs here instead.
+    Resolution order (design §3): valid session cookie → trusted proxy
+    header (mode-dependent; in legacy mode the header path includes the
+    anonymous `local` fallback) → 401 JSON with a login_url, never a
+    redirect. Every route resolves identity through this one dependency;
+    auth.py stays free of database imports, so the session lookup and the
+    registry upsert both live here.
     """
-    user = current_user(request)
-    users.touch(user, display_name(request))
-    return user
+    token = request.cookies.get(auth.COOKIE_NAME)
+    if token:
+        user = sessions.resolve(token, auth.session_days())
+        if user:
+            users.touch(user)
+            return user
+    if auth.header_trusted(request):
+        user = current_user(request)
+        if auth.mode() == auth.LEGACY or user != auth.FALLBACK_USER:
+            users.touch(user, display_name(request))
+            return user
+    raise HTTPException(401, "sign in required")
 
 
 User = Annotated[str, Depends(resolve_user)]
+
+
+class SetupRequest(BaseModel):
+    token: str
+
+
+@app.post("/api/setup")
+def setup(req: SetupRequest, user: User):
+    """Promote the currently signed-in user to admin with the one-time
+    setup token printed to the container log (no-admin boots only)."""
+    if not oidc_mod.consume_setup_token(req.token.strip(), user):
+        raise HTTPException(403, "invalid or already-used setup token")
+    return {"user": user, "is_admin": True}
 
 
 def get_deck_or_404(slug: str, user: str):
@@ -135,7 +216,10 @@ def me(request: Request, user: User):
         "limits": limits.status(user) if limits.enabled() else {"enabled": False},
         "is_admin": is_admin(user),
         "authenticated": authenticated,
-        "logout_url": LOGOUT_URL if authenticated else None,
+        # oidc sessions log out through the app (POST /auth/logout); the
+        # legacy/header path keeps the proxy's sign-out URL.
+        "logout_url": ("/auth/logout" if request.cookies.get(auth.COOKIE_NAME)
+                       else LOGOUT_URL) if authenticated else None,
         "version": VERSION,
     }
 
@@ -871,6 +955,7 @@ def require_admin(user: str) -> None:
 class UpdateUserRequest(BaseModel):
     display_name: str | None = None
     active: bool | None = None
+    is_admin: bool | None = None
 
 
 @app.get("/api/admin/users")
@@ -882,9 +967,19 @@ def admin_users_list(user: User):
 @app.patch("/api/admin/users/{username}")
 def admin_user_update(username: str, req: UpdateUserRequest, user: User):
     require_admin(user)
-    updated = users.update(username, display_name=req.display_name, active=req.active)
-    if not updated:
+    target = users.get(username)
+    if not target:
         raise HTTPException(404, f"user '{username}' not found")
+    # Never orphan the instance: the last active admin can be neither
+    # deactivated nor demoted.
+    if (req.active is False or req.is_admin is False) and target["is_admin"] and target["active"]:
+        if not users.other_active_admin_exists(username):
+            raise HTTPException(409, "cannot remove the last active admin")
+    updated = users.update(username, display_name=req.display_name, active=req.active)
+    if req.is_admin is not None:
+        updated = users.set_admin(username, req.is_admin) or updated
+    if req.active is False:
+        sessions.destroy_all(username)  # a deactivated account signs out everywhere
     return updated
 
 
@@ -1123,7 +1218,15 @@ def patch_me(req: MeRequest, request: Request, user: User):
 
 
 def _my_display_name(request: Request, user: str) -> str:
-    return db.get_user_setting(user, "display_name") or display_name(request)
+    """Self-chosen override → header-derived name → the registry row (the
+    only source for cookie-session requests, which carry no header)."""
+    override = db.get_user_setting(user, "display_name")
+    if override:
+        return override
+    if auth._raw_identity(request):
+        return display_name(request)
+    row = users.get(user)
+    return row["display_name"] if row else display_name(request)
 
 
 @app.get("/api/admin/usage")
