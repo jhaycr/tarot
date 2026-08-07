@@ -82,6 +82,20 @@
 	let autoReadError = $state('');
 	let hideDrafts = $state(false);
 	let hideDraftsError = $state('');
+	let displayName = $state('');
+	let displayNameSaved = $state(true);
+	let displayNameError = $state('');
+
+	async function saveDisplayName() {
+		displayNameError = '';
+		try {
+			const r = await api.patchMe({ display_name: displayName.trim() });
+			displayName = r.display_name;
+			displayNameSaved = true;
+		} catch {
+			displayNameError = 'Could not save — try again.';
+		}
+	}
 
 	async function setHideDrafts(v: boolean) {
 		hideDrafts = v;
@@ -111,6 +125,7 @@
 			ttsEnabled = m.tts;
 			autoRead = m.settings.auto_read_audio;
 			hideDrafts = m.settings.hide_draft_decks;
+			displayName = m.display_name;
 			if (m.is_admin) {
 				refreshLlm();
 				refreshTts();
@@ -202,6 +217,25 @@
 </script>
 
 <h1>Settings</h1>
+
+<section>
+	<h2>Display name</h2>
+	<label class="fld">
+		<span>How your name appears in shares and the journal. Clearing it goes back to the
+			name from your sign-in.</span>
+		<input
+			type="text"
+			bind:value={displayName}
+			maxlength="64"
+			oninput={() => (displayNameSaved = false)}
+			onkeydown={(e) => e.key === 'Enter' && saveDisplayName()}
+		/>
+	</label>
+	{#if !displayNameSaved}
+		<button onclick={saveDisplayName}>Save name</button>
+	{/if}
+	{#if displayNameError}<p class="error">{displayNameError}</p>{/if}
+</section>
 
 {#if ttsEnabled}
 	<section>

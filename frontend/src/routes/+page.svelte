@@ -9,7 +9,9 @@
 		favDecks,
 		recentDecks,
 		toggleFavDeck,
-		pushRecentDeck
+		pushRecentDeck,
+		extrasPref,
+		setExtrasPref
 	} from '$lib/prefs.svelte';
 	import { readingStore } from '$lib/reading.svelte';
 
@@ -63,11 +65,11 @@
 
 	let includeExtras = $state(false);
 	$effect(() => {
-		includeExtras = localStorage.getItem(`tarot.extras.${prefDeck.value}`) === 'true';
+		includeExtras = extrasPref(prefDeck.value);
 	});
 	function setIncludeExtras(v: boolean) {
 		includeExtras = v;
-		localStorage.setItem(`tarot.extras.${prefDeck.value}`, String(v));
+		setExtrasPref(prefDeck.value, v);
 	}
 
 	$effect(() => {

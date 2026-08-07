@@ -128,12 +128,10 @@ def me(request: Request, user: User):
     authenticated = is_authenticated(request)
     return {
         "user": user,
-        "display_name": display_name(request),
+        "display_name": _my_display_name(request, user),
         "interpretation": interp.config() is not None,
         "tts": tts.config() is not None,
-        "settings": {"auto_read_audio": db.get_user_setting(user, "auto_read_audio") == "true",
-                     "hide_draft_decks": db.get_user_setting(user, "hide_draft_decks") == "true",
-                     "default_books": _default_books(user)},
+        "settings": get_my_settings(user),
         "limits": limits.status(user) if limits.enabled() else {"enabled": False},
         "is_admin": is_admin(user),
         "authenticated": authenticated,
@@ -145,8 +143,10 @@ def me(request: Request, user: User):
 @app.get("/api/users")
 def users_list(user: User):
     """People who can be picked as share recipients."""
+    overrides = db.display_name_overrides()
     return [
-        {"username": u["username"], "display_name": u["display_name"]}
+        {"username": u["username"],
+         "display_name": overrides.get(u["username"]) or u["display_name"]}
         for u in users.list_people()
     ]
 
@@ -898,7 +898,7 @@ def account(request: Request, user: User):
     ]
     return {
         "user": user,
-        "display_name": display_name(request),
+        "display_name": _my_display_name(request, user),
         "authenticated": is_authenticated(request),
         "is_admin": is_admin(user),
         "reading_count": db.owned_reading_count(user),
@@ -1024,10 +1024,26 @@ def set_limits_settings(req: LimitsSettingsRequest, user: User):
     return get_limits_settings(user)
 
 
+# The migrated device-preference keys (formerly localStorage): stored as
+# opaque strings — the frontend owns their meaning; the server only bounds
+# their size. `extras` fans out to one `extras.<slug>` row per deck.
+PREF_STR_KEYS = ("deck", "spread", "reversals", "persona", "guided_mode", "journal_layout")
+PREF_LIST_KEYS = ("fav_decks", "recent_decks")
+
+
 class UserSettingsRequest(BaseModel):
     auto_read_audio: bool | None = None
     hide_draft_decks: bool | None = None
     default_books: list[str] | None = None
+    deck: str | None = Field(default=None, max_length=200)
+    spread: str | None = Field(default=None, max_length=200)
+    reversals: str | None = Field(default=None, max_length=20)
+    persona: str | None = Field(default=None, max_length=100)
+    guided_mode: str | None = Field(default=None, max_length=20)
+    journal_layout: str | None = Field(default=None, max_length=20)
+    fav_decks: list[str] | None = None
+    recent_decks: list[str] | None = None
+    extras: dict[str, bool] | None = None  # {deck_slug: include_extras}
 
 
 def _default_books(user: str) -> list[str]:
@@ -1038,12 +1054,33 @@ def _default_books(user: str) -> list[str]:
         return []
 
 
+def _json_list(raw: str) -> list[str]:
+    try:
+        v = json.loads(raw or "[]")
+        return [s for s in v if isinstance(s, str)] if isinstance(v, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
 @app.get("/api/settings/me")
 def get_my_settings(user: User):
-    """Per-user settings that follow the account across devices."""
-    return {"auto_read_audio": db.get_user_setting(user, "auto_read_audio") == "true",
-            "hide_draft_decks": db.get_user_setting(user, "hide_draft_decks") == "true",
-            "default_books": _default_books(user)}
+    """The full per-user profile — every preference follows the account
+    across devices. `has_profile` tells the frontend whether the migrated
+    device prefs have ever been written (drives the one-time first-login
+    import from localStorage)."""
+    stored = db.user_settings_all(user)
+    profile_keys = set(PREF_STR_KEYS) | set(PREF_LIST_KEYS)
+    return {
+        "auto_read_audio": stored.get("auto_read_audio") == "true",
+        "hide_draft_decks": stored.get("hide_draft_decks") == "true",
+        "default_books": _default_books(user),
+        **{k: (stored[k] if k in stored else None) for k in PREF_STR_KEYS},
+        **{k: (_json_list(stored[k]) if k in stored else None) for k in PREF_LIST_KEYS},
+        "extras": {k[len("extras."):]: v == "true"
+                   for k, v in stored.items() if k.startswith("extras.")},
+        "has_profile": any(k in stored for k in profile_keys)
+                       or any(k.startswith("extras.") for k in stored),
+    }
 
 
 @app.put("/api/settings/me")
@@ -1056,7 +1093,37 @@ def set_my_settings(req: UserSettingsRequest, user: User):
         known = books_mod.discover_books(user)
         db.set_user_setting(user, "default_books",
                             json.dumps([s for s in req.default_books if s in known]))
+    for key in PREF_STR_KEYS:
+        value = getattr(req, key)
+        if value is not None:
+            db.set_user_setting(user, key, value)
+    for key in PREF_LIST_KEYS:
+        value = getattr(req, key)
+        if value is not None:
+            db.set_user_setting(user, key, json.dumps([s for s in value if isinstance(s, str)][:50]))
+    if req.extras is not None:
+        for slug, include in list(req.extras.items())[:50]:
+            db.set_user_setting(user, f"extras.{slug[:100]}", "true" if include else "false")
     return get_my_settings(user)
+
+
+class MeRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=64)
+
+
+@app.patch("/api/me")
+def patch_me(req: MeRequest, request: Request, user: User):
+    """Self-service profile edits. A blank display_name clears the override,
+    falling back to the identity-derived name (users.touch keeps rewriting
+    the registry row from the header, so the override lives in
+    user_settings where nothing clobbers it)."""
+    if req.display_name is not None:
+        db.set_user_setting(user, "display_name", req.display_name.strip())
+    return {"display_name": _my_display_name(request, user)}
+
+
+def _my_display_name(request: Request, user: str) -> str:
+    return db.get_user_setting(user, "display_name") or display_name(request)
 
 
 @app.get("/api/admin/usage")

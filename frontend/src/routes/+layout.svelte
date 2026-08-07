@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 
 	import { api } from '$lib/api';
+	import { syncPrefs } from '$lib/prefs.svelte';
 
 	let { children } = $props();
 
@@ -17,6 +18,7 @@
 			user = m.display_name;
 			logoutUrl = m.logout_url;
 			version = m.version;
+			syncPrefs(m.settings);
 		});
 	});
 

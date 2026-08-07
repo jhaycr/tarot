@@ -230,6 +230,21 @@ export interface UserSettings {
 	/** Hide your own draft (unpublished) decks from the reading picker. */
 	hide_draft_decks: boolean;
 	default_books: string[];
+	// Migrated device prefs (null = never set server-side; strings are opaque
+	// to the server — the frontend owns their meaning).
+	deck: string | null;
+	spread: string | null;
+	reversals: string | null;
+	persona: string | null;
+	guided_mode: string | null;
+	journal_layout: string | null;
+	fav_decks: string[] | null;
+	recent_decks: string[] | null;
+	/** Per-deck "include extras" choices, keyed by deck slug. */
+	extras: Record<string, boolean>;
+	/** False until any migrated pref has been written — drives the one-time
+	 * first-login import from localStorage. */
+	has_profile: boolean;
 }
 
 export interface LimitGauge {
@@ -465,6 +480,8 @@ export const api = {
 		tts_minutes_per_day?: number;
 	}) => send<LimitsSettings>('PUT', '/api/settings/limits', s),
 	setMySettings: (s: Partial<UserSettings>) => send<UserSettings>('PUT', '/api/settings/me', s),
+	patchMe: (p: { display_name?: string }) =>
+		send<{ display_name: string }>('PATCH', '/api/me', p),
 	adminUsage: (days: number) => get<UsageSummary>(`/api/admin/usage?days=${days}`),
 	getTtsSettings: () => get<TtsSettings>('/api/settings/tts'),
 	setTtsSettings: (s: {

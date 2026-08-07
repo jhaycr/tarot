@@ -662,11 +662,33 @@ def get_user_setting(owner: str, key: str, default: str = "") -> str:
 
 def set_user_setting(owner: str, key: str, value: str) -> None:
     with connect() as con:
+        if value == "":
+            con.execute("DELETE FROM user_settings WHERE owner = ? AND key = ?", (owner, key))
+            return
         con.execute(
             "INSERT INTO user_settings (owner, key, value) VALUES (?,?,?)"
             " ON CONFLICT(owner, key) DO UPDATE SET value = excluded.value",
             (owner, key, value),
         )
+
+
+def user_settings_all(owner: str) -> dict[str, str]:
+    """Every stored setting for one user, as {key: value}."""
+    with connect() as con:
+        return {
+            r["key"]: r["value"]
+            for r in con.execute("SELECT key, value FROM user_settings WHERE owner = ?", (owner,))
+        }
+
+
+def display_name_overrides() -> dict[str, str]:
+    """Self-chosen display names ({username: name}) — they win over the
+    header/IdP-derived name wherever names are shown."""
+    with connect() as con:
+        return {
+            r["owner"]: r["value"]
+            for r in con.execute("SELECT owner, value FROM user_settings WHERE key = 'display_name'")
+        }
 
 
 def record_usage(
