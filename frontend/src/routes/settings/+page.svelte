@@ -124,17 +124,36 @@
 	let peopleError = $state('');
 	let reassignTarget = $state<Record<string, string>>({});
 	let reassignReport = $state<ReassignReport | null>(null);
+	// Pending flag edits, keyed by username — nothing is sent until Save.
+	let edits = $state<Record<string, { is_admin?: boolean; active?: boolean }>>({});
+	const dirtyCount = $derived(Object.keys(edits).length);
 
 	async function loadPeople() {
 		people = await api.adminUsers();
+		edits = {};
 	}
 
-	async function setUserFlag(u: AdminUser, patch: { active?: boolean; is_admin?: boolean }) {
+	function flagOf(u: AdminUser, flag: 'is_admin' | 'active'): boolean {
+		return edits[u.username]?.[flag] ?? u[flag];
+	}
+
+	function editFlag(u: AdminUser, flag: 'is_admin' | 'active', value: boolean) {
+		const pending = { ...edits[u.username], [flag]: value };
+		// drop entries that are back to the server state
+		if (pending.is_admin === u.is_admin) delete pending.is_admin;
+		if (pending.active === u.active) delete pending.active;
+		if (Object.keys(pending).length) edits[u.username] = pending;
+		else delete edits[u.username];
+	}
+
+	async function savePeople() {
 		peopleError = '';
-		try {
-			await api.adminUserUpdate(u.username, patch);
-		} catch (e) {
-			peopleError = errMsgOf(e);
+		for (const [username, patch] of Object.entries(edits)) {
+			try {
+				await api.adminUserUpdate(username, patch);
+			} catch (e) {
+				peopleError = `${username}: ${errMsgOf(e)}`;
+			}
 		}
 		await loadPeople();
 	}
@@ -329,21 +348,21 @@
 						<strong>{u.display_name}</strong>
 						<small class="dim">{u.username}{u.kind === 'system' ? ' · system' : ''}</small>
 					</span>
-					<label class="flag">
+					<label class="flag" class:pending={edits[u.username]?.is_admin !== undefined}>
 						<input
 							type="checkbox"
-							checked={u.is_admin}
+							checked={flagOf(u, 'is_admin')}
 							disabled={u.username === me_username && u.is_admin}
-							onchange={(e) => setUserFlag(u, { is_admin: e.currentTarget.checked })}
+							onchange={(e) => editFlag(u, 'is_admin', e.currentTarget.checked)}
 						/>
 						admin
 					</label>
-					<label class="flag">
+					<label class="flag" class:pending={edits[u.username]?.active !== undefined}>
 						<input
 							type="checkbox"
-							checked={u.active}
+							checked={flagOf(u, 'active')}
 							disabled={u.username === me_username}
-							onchange={(e) => setUserFlag(u, { active: e.currentTarget.checked })}
+							onchange={(e) => editFlag(u, 'active', e.currentTarget.checked)}
 						/>
 						active
 					</label>
@@ -366,6 +385,14 @@
 				</div>
 			{/each}
 		</div>
+		{#if dirtyCount > 0}
+			<p class="savebar">
+				<button class="primary" onclick={savePeople}>
+					Save {dirtyCount} {dirtyCount === 1 ? 'change' : 'changes'}
+				</button>
+				<button onclick={() => (edits = {})}>Discard</button>
+			</p>
+		{/if}
 		{#if reassignReport}
 			<p class="dim">
 				Moved to {reassignReport.to}: {reassignReport.readings} readings,
@@ -658,6 +685,16 @@
 		border-color: var(--danger);
 		font-size: 0.85rem;
 		padding: 0.25rem 0.7rem;
+	}
+
+	.person .flag.pending {
+		color: var(--gold-bright);
+	}
+
+	.savebar {
+		display: flex;
+		gap: 0.6rem;
+		align-items: center;
 	}
 
 	section {
