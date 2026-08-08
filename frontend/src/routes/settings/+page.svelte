@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api, type UsageSummary } from '$lib/api';
+	import { api, type AdminUser, type ReassignReport, type UsageSummary } from '$lib/api';
 
 
 	let isAdmin = $state(false);
@@ -119,9 +119,58 @@
 		}
 	}
 
+	let people = $state<AdminUser[]>([]);
+	let me_username = $state('');
+	let peopleError = $state('');
+	let reassignTarget = $state<Record<string, string>>({});
+	let reassignReport = $state<ReassignReport | null>(null);
+
+	async function loadPeople() {
+		people = await api.adminUsers();
+	}
+
+	async function setUserFlag(u: AdminUser, patch: { active?: boolean; is_admin?: boolean }) {
+		peopleError = '';
+		try {
+			await api.adminUserUpdate(u.username, patch);
+		} catch (e) {
+			peopleError = errMsgOf(e);
+		}
+		await loadPeople();
+	}
+
+	async function reassign(u: AdminUser) {
+		const to = reassignTarget[u.username];
+		if (!to) return;
+		if (!confirm(`Move ALL of ${u.username}'s readings, settings, drafts and history to ${to}, then deactivate ${u.username}? This cannot be undone from the UI.`)) return;
+		peopleError = '';
+		try {
+			reassignReport = await api.adminReassign(u.username, to);
+			await loadPeople();
+		} catch (e) {
+			peopleError = errMsgOf(e);
+		}
+	}
+
+	function errMsgOf(e: unknown): string {
+		return e instanceof Error ? e.message : String(e);
+	}
+
+	async function deleteUser(u: AdminUser) {
+		if (!confirm(`Permanently DELETE ${u.username}? Their readings, shares, settings and drafts are erased; anything they published stays as "former member". This cannot be undone.`)) return;
+		peopleError = '';
+		try {
+			await api.adminUserDelete(u.username);
+			await loadPeople();
+		} catch (e) {
+			peopleError = errMsgOf(e);
+		}
+	}
+
 	$effect(() => {
 		api.me().then((m) => {
 			isAdmin = m.is_admin;
+			me_username = m.user;
 			ttsEnabled = m.tts;
 			autoRead = m.settings.auto_read_audio;
 			hideDrafts = m.settings.hide_draft_decks;
@@ -131,6 +180,7 @@
 				refreshTts();
 				refreshLimits();
 				loadUsage();
+				loadPeople();
 				api.getReadingSettings().then((s) => {
 					reversalChance = s.reversal_chance;
 					reversalManaged = s.managed.includes('reversal_chance');
@@ -270,6 +320,65 @@
 {/if}
 
 {#if isAdmin}
+	<section>
+		<h2>People <small class="dim">(admin)</small></h2>
+		<div class="people">
+			{#each people as u (u.username)}
+				<div class="person" class:inactive={!u.active}>
+					<span class="who">
+						<strong>{u.display_name}</strong>
+						<small class="dim">{u.username}{u.kind === 'system' ? ' · system' : ''}</small>
+					</span>
+					<label class="flag">
+						<input
+							type="checkbox"
+							checked={u.is_admin}
+							disabled={u.username === me_username && u.is_admin}
+							onchange={(e) => setUserFlag(u, { is_admin: e.currentTarget.checked })}
+						/>
+						admin
+					</label>
+					<label class="flag">
+						<input
+							type="checkbox"
+							checked={u.active}
+							disabled={u.username === me_username}
+							onchange={(e) => setUserFlag(u, { active: e.currentTarget.checked })}
+						/>
+						active
+					</label>
+					{#if u.kind === 'system' || !u.active}
+						<span class="reassign">
+							<select bind:value={reassignTarget[u.username]}>
+								<option value="" disabled selected>reassign data to…</option>
+								{#each people.filter((p) => p.kind === 'person' && p.active && p.username !== u.username) as t (t.username)}
+									<option value={t.username}>{t.display_name}</option>
+								{/each}
+							</select>
+							<button onclick={() => reassign(u)} disabled={!reassignTarget[u.username]}>
+								Reassign
+							</button>
+							{#if !u.active}
+								<button class="danger" onclick={() => deleteUser(u)}>Delete</button>
+							{/if}
+						</span>
+					{/if}
+				</div>
+			{/each}
+		</div>
+		{#if reassignReport}
+			<p class="dim">
+				Moved to {reassignReport.to}: {reassignReport.readings} readings,
+				{reassignReport.usage_rows} usage rows, {reassignReport.settings} settings,
+				{reassignReport.staging_moved.length} draft folders{reassignReport.staging_collisions.length
+					? ` (${reassignReport.staging_collisions.length} renamed on collision)`
+					: ''}, {reassignReport.library_restamped.length} library attributions.
+				{reassignReport.from} deactivated.
+			</p>
+		{/if}
+		{#if peopleError}<p class="error">{peopleError}</p>{/if}
+	</section>
+
 	<section>
 		<h2>Readings <small class="dim">(admin)</small></h2>
 		<label class="fld">
@@ -498,6 +607,57 @@
 
 
 <style>
+	.people {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.person {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		flex-wrap: wrap;
+		padding: 0.4rem 0.6rem;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+	}
+
+	.person.inactive {
+		opacity: 0.55;
+	}
+
+	.person .who {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		min-width: 10rem;
+	}
+
+	.person .flag {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.85rem;
+		color: var(--text-dim);
+	}
+
+	.person .reassign {
+		display: inline-flex;
+		gap: 0.4rem;
+		align-items: center;
+	}
+
+	.person .reassign button {
+		font-size: 0.85rem;
+		padding: 0.25rem 0.7rem;
+	}
+
+	.person .danger {
+		color: var(--danger);
+		border-color: var(--danger);
+	}
+
 	section {
 		max-width: 46rem;
 		margin-bottom: 2.5rem;

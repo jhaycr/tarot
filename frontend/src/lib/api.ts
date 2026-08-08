@@ -225,6 +225,29 @@ export interface VoiceBlock {
 }
 
 /** Settings that follow the user across devices (unlike localStorage prefs). */
+export interface AdminUser {
+	username: string;
+	display_name: string;
+	kind: string; // person | system
+	active: boolean;
+	is_admin: boolean;
+	first_seen: number;
+	last_seen: number;
+}
+
+/** What the reassignment tool did — counts per surface plus file moves. */
+export interface ReassignReport {
+	from: string;
+	to: string;
+	readings: number;
+	settings: number;
+	usage_rows: number;
+	staging_moved: string[];
+	staging_collisions: string[];
+	library_restamped: string[];
+	deactivated: boolean;
+}
+
 export interface UserSettings {
 	auto_read_audio: boolean;
 	/** Hide your own draft (unpublished) decks from the reading picker. */
@@ -499,6 +522,13 @@ export const api = {
 	setMySettings: (s: Partial<UserSettings>) => send<UserSettings>('PUT', '/api/settings/me', s),
 	patchMe: (p: { display_name?: string }) =>
 		send<{ display_name: string }>('PATCH', '/api/me', p),
+	adminUsers: () => get<AdminUser[]>('/api/admin/users'),
+	adminUserUpdate: (u: string, p: { display_name?: string; active?: boolean; is_admin?: boolean }) =>
+		send<AdminUser>('PATCH', `/api/admin/users/${encodeURIComponent(u)}`, p),
+	adminReassign: (u: string, to: string) =>
+		send<ReassignReport>('POST', `/api/admin/users/${encodeURIComponent(u)}/reassign`, { to }),
+	adminUserDelete: (u: string) =>
+		send<Record<string, unknown>>('DELETE', `/api/admin/users/${encodeURIComponent(u)}`),
 	adminUsage: (days: number) => get<UsageSummary>(`/api/admin/usage?days=${days}`),
 	getTtsSettings: () => get<TtsSettings>('/api/settings/tts'),
 	setTtsSettings: (s: {

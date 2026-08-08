@@ -964,6 +964,53 @@ def admin_users_list(user: User):
     return users.list_all()
 
 
+class ReassignRequest(BaseModel):
+    to: str
+
+
+@app.post("/api/admin/users/{username}/reassign")
+def admin_reassign(username: str, req: ReassignRequest, user: User):
+    """Hand every owner surface of `username` to another person and
+    deactivate the source — the `local` retirement tool (auth Step 7),
+    generalized to any user."""
+    from tarot import reassign as reassign_mod
+
+    require_admin(user)
+    dst = req.to.strip()
+    src_row = users.get(username)
+    dst_row = users.get(dst)
+    if not src_row:
+        raise HTTPException(404, f"user '{username}' not found")
+    if not dst_row or not dst_row["active"]:
+        raise HTTPException(400, f"'{dst}' is not an active user")
+    if username == dst:
+        raise HTTPException(400, "source and destination are the same user")
+    if dst_row["kind"] != users.KIND_PERSON:
+        raise HTTPException(400, "destination must be a person")
+    if src_row["is_admin"] and src_row["active"] and not users.other_active_admin_exists(username):
+        raise HTTPException(409, "cannot deactivate the last active admin")
+    # sync route: FastAPI already runs this in the threadpool
+    return reassign_mod.reassign_user_data(username, dst)
+
+
+@app.delete("/api/admin/users/{username}")
+def admin_user_delete(username: str, user: User):
+    """Erase a user and their data (library publications tombstone to
+    "former member"; the usage ledger stays). Deactivate-first is required
+    — deletion is deliberate, never a one-click accident."""
+    from tarot import reassign as reassign_mod
+
+    require_admin(user)
+    target = users.get(username)
+    if not target:
+        raise HTTPException(404, f"user '{username}' not found")
+    if username == user:
+        raise HTTPException(400, "you cannot delete yourself")
+    if target["active"]:
+        raise HTTPException(409, "deactivate the user first — deletion is permanent")
+    return reassign_mod.delete_user(username)
+
+
 @app.patch("/api/admin/users/{username}")
 def admin_user_update(username: str, req: UpdateUserRequest, user: User):
     require_admin(user)
