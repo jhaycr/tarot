@@ -23,4 +23,9 @@ ENV TAROT_STATIC_DIR=/app/frontend-build \
 
 EXPOSE 8000
 VOLUME /data
-CMD ["uvicorn", "tarot.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# --proxy-headers: honor X-Forwarded-Proto/Host from the reverse proxy so
+# request.url reflects the browser-facing https origin — the OIDC
+# redirect_uri and cookie Secure flag are derived from it. Direct LAN
+# requests carry no forwarded headers and are unaffected.
+CMD ["uvicorn", "tarot.api.app:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]
