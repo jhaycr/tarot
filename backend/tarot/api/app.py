@@ -996,8 +996,9 @@ def admin_reassign(username: str, req: ReassignRequest, user: User):
 @app.delete("/api/admin/users/{username}")
 def admin_user_delete(username: str, user: User):
     """Erase a user and their data (library publications tombstone to
-    "former member"; the usage ledger stays). Deactivate-first is required
-    — deletion is deliberate, never a one-click accident."""
+    "former member"; the usage ledger stays). Admins must be demoted
+    first — the two-step makes deleting a privileged account deliberate;
+    ordinary users delete directly (the UI confirms)."""
     from tarot import reassign as reassign_mod
 
     require_admin(user)
@@ -1006,8 +1007,8 @@ def admin_user_delete(username: str, user: User):
         raise HTTPException(404, f"user '{username}' not found")
     if username == user:
         raise HTTPException(400, "you cannot delete yourself")
-    if target["active"]:
-        raise HTTPException(409, "deactivate the user first — deletion is permanent")
+    if target["is_admin"]:
+        raise HTTPException(409, "remove admin from this user first — admins cannot be deleted")
     return reassign_mod.delete_user(username)
 
 

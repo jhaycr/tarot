@@ -358,10 +358,10 @@
 							<button onclick={() => reassign(u)} disabled={!reassignTarget[u.username]}>
 								Reassign
 							</button>
-							{#if !u.active}
-								<button class="danger" onclick={() => deleteUser(u)}>Delete</button>
-							{/if}
 						</span>
+					{/if}
+					{#if !u.is_admin && u.username !== me_username}
+						<button class="danger" onclick={() => deleteUser(u)}>Delete</button>
 					{/if}
 				</div>
 			{/each}
@@ -656,6 +656,8 @@
 	.person .danger {
 		color: var(--danger);
 		border-color: var(--danger);
+		font-size: 0.85rem;
+		padding: 0.25rem 0.7rem;
 	}
 
 	section {
