@@ -3,6 +3,21 @@
 
 	let account = $state<Account | null>(null);
 	let busy = $state('');
+	let deleteConfirm = $state('');
+	let deleteError = $state('');
+
+	async function deleteMyData() {
+		if (!account) return;
+		if (!confirm('Last chance: this permanently erases your journal, settings and drafts. Continue?')) return;
+		deleteError = '';
+		try {
+			await api.deleteMe(deleteConfirm.trim());
+			// account (and session) are gone — back to the signed-out shell
+			window.location.href = '/';
+		} catch (e) {
+			deleteError = e instanceof Error ? e.message : String(e);
+		}
+	}
 
 	$effect(() => {
 		load();
@@ -124,11 +139,73 @@
 			</ul>
 		{/if}
 	</section>
+
+	<section>
+		<h2>Your data</h2>
+		<p class="dim">
+			Download everything your account owns — the full journal with interpretations and
+			sharing, your settings, and the list of your decks and books. (Deck images export
+			from each deck's own page.)
+		</p>
+		<p><a class="export" href="/api/me/export" download>Download my data (.zip)</a></p>
+
+		<h3 class="dangerhead">Delete my data</h3>
+		<p class="dim">
+			Permanently erases your readings, settings, and draft decks/books. Anything you
+			published to the shared library stays, credited to "former member". Signing in
+			again afterwards starts a fresh, empty account. Type your username
+			(<code>{account.user}</code>) to arm the button.
+		</p>
+		<p class="deleterow">
+			<input type="text" bind:value={deleteConfirm} placeholder={account.user} />
+			<button
+				class="danger"
+				disabled={deleteConfirm !== account.user}
+				onclick={deleteMyData}
+			>
+				Delete everything
+			</button>
+		</p>
+		{#if deleteError}<p class="error">{deleteError}</p>{/if}
+	</section>
 {:else}
 	<p class="dim">Loading…</p>
 {/if}
 
 <style>
+	.export {
+		color: var(--gold-bright);
+		border-bottom: 1px solid var(--gold);
+	}
+
+	.dangerhead {
+		margin-top: 1.6rem;
+		color: var(--danger);
+	}
+
+	.deleterow {
+		display: flex;
+		gap: 0.6rem;
+		align-items: center;
+	}
+
+	.deleterow input {
+		max-width: 16rem;
+	}
+
+	.danger {
+		color: var(--danger);
+		border-color: var(--danger);
+	}
+
+	.danger:disabled {
+		opacity: 0.5;
+	}
+
+	.error {
+		color: var(--danger);
+	}
+
 	.identity {
 		margin-bottom: 1.5rem;
 	}

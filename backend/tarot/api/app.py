@@ -1031,6 +1031,62 @@ def admin_user_update(username: str, req: UpdateUserRequest, user: User):
     return updated
 
 
+@app.get("/api/me/export")
+def export_my_data(request: Request, user: User):
+    """Everything the account owns, as a zip: the full journal (cards,
+    interpretations, sharing as the owner sees it), settings, and the slugs
+    of owned decks/books (their media stays on the per-deck export — those
+    zips can be huge)."""
+    payload = io.BytesIO()
+    readings = [
+        _reading_view(db.get_reading(r["id"], user), user)
+        for r in db.list_readings(user, include_shared=False)
+    ]
+    owned = {
+        "decks": sorted(
+            d.slug for d in discover_decks(user).values()
+            if d.tier == decks_mod.STAGING or (d.tier == decks_mod.LIBRARY and d.published_by == user)
+        ),
+        "books": sorted(
+            b.slug for b in books_mod.discover_books(user).values()
+            if b.tier == books_mod.STAGING or (b.tier == books_mod.LIBRARY and b.published_by == user)
+        ),
+    }
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("readings.json", json.dumps(readings, indent=2))
+        z.writestr("settings.json", json.dumps(db.user_settings_all(user), indent=2))
+        z.writestr("owned.json", json.dumps(owned, indent=2))
+        z.writestr("account.json", json.dumps({
+            "username": user,
+            "display_name": _my_display_name(request, user),
+            "exported_at": int(time.time()),
+            "app_version": VERSION,
+        }, indent=2))
+    payload.seek(0)
+    return Response(
+        payload.read(), media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="tarotarium-{user}.zip"'},
+    )
+
+
+class DeleteMeRequest(BaseModel):
+    confirm: str
+
+
+@app.post("/api/me/delete")
+def delete_my_data(req: DeleteMeRequest, user: User):
+    """Self-service erasure — same semantics as the admin delete (readings
+    cascade, drafts removed, library publications tombstone, ledger stays,
+    row dropped). A later sign-in starts a fresh account via JIT."""
+    from tarot import reassign as reassign_mod
+
+    if req.confirm.strip() != user:
+        raise HTTPException(400, "type your username exactly to confirm")
+    if is_admin(user) and not users.other_active_admin_exists(user):
+        raise HTTPException(409, "you are the last admin — promote someone else first")
+    return reassign_mod.delete_user(user)
+
+
 @app.get("/api/account")
 def account(request: Request, user: User):
     """Everything the current user owns and has shared, for the account page."""

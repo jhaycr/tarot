@@ -529,6 +529,8 @@ export const api = {
 		send<ReassignReport>('POST', `/api/admin/users/${encodeURIComponent(u)}/reassign`, { to }),
 	adminUserDelete: (u: string) =>
 		send<Record<string, unknown>>('DELETE', `/api/admin/users/${encodeURIComponent(u)}`),
+	deleteMe: (confirm: string) =>
+		send<Record<string, unknown>>('POST', '/api/me/delete', { confirm }),
 	adminUsage: (days: number) => get<UsageSummary>(`/api/admin/usage?days=${days}`),
 	getTtsSettings: () => get<TtsSettings>('/api/settings/tts'),
 	setTtsSettings: (s: {
