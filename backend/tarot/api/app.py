@@ -150,6 +150,24 @@ class SetupRequest(BaseModel):
     token: str
 
 
+@app.get("/api/setup")
+def setup_state(user: User):
+    """Whether first-admin bootstrap is still open, for the /auth/setup page.
+
+    Calling this re-prints the token when an instance is left adminless
+    long after boot (deactivation, deletion) — ensure_setup_token only
+    generates when there is no admin and no live token, so polling the
+    page can't spam the log."""
+    # users.touch is queued/best-effort, so on a first-ever sighting the
+    # caller's row (and the is_admin seeded with it) may not have landed
+    # yet — flush first or `required` and `is_admin` can contradict each
+    # other inside one response.
+    users.flush_touches()
+    oidc_mod.ensure_setup_token()
+    return {"required": not users.active_admin_exists(),
+            "user": user, "is_admin": is_admin(user)}
+
+
 @app.post("/api/setup")
 def setup(req: SetupRequest, user: User):
     """Promote the currently signed-in user to admin with the one-time

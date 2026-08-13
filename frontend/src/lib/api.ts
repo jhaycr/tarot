@@ -345,8 +345,12 @@ export class ApiError extends Error {
 	}
 }
 
-/** Signed out (OIDC mode): bounce through the app's login. /api/me is exempt
- * so the shell can render its signed-in/out state instead of looping. */
+/** Endpoints that render their own signed-out state instead of bouncing to
+ * the login: the shell (/api/me) and the first-admin page, which must be able
+ * to say "sign in first" on an instance where OIDC isn't configured yet. */
+const NO_LOGIN_BOUNCE = new Set(['/api/me', '/api/setup']);
+
+/** Signed out (OIDC mode): bounce through the app's login. */
 function redirectToLogin(): void {
 	window.location.href =
 		'/auth/login?next=' + encodeURIComponent(window.location.pathname + window.location.search);
@@ -374,7 +378,7 @@ function artVersion(deck: string): string {
 
 async function get<T>(url: string): Promise<T> {
 	const res = await fetch(url);
-	if (res.status === 401 && url !== '/api/me') redirectToLogin();
+	if (res.status === 401 && !NO_LOGIN_BOUNCE.has(url)) redirectToLogin();
 	if (!res.ok) throw await errorFrom(res, `${url}: ${res.status}`);
 	return res.json();
 }
@@ -531,6 +535,10 @@ export const api = {
 		send<Record<string, unknown>>('DELETE', `/api/admin/users/${encodeURIComponent(u)}`),
 	deleteMe: (confirm: string) =>
 		send<Record<string, unknown>>('POST', '/api/me/delete', { confirm }),
+	setupState: () =>
+		get<{ required: boolean; user: string; is_admin: boolean }>('/api/setup'),
+	claimAdmin: (token: string) =>
+		send<{ user: string; is_admin: boolean }>('POST', '/api/setup', { token }),
 	adminUsage: (days: number) => get<UsageSummary>(`/api/admin/usage?days=${days}`),
 	getTtsSettings: () => get<TtsSettings>('/api/settings/tts'),
 	setTtsSettings: (s: {
