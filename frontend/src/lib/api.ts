@@ -218,12 +218,6 @@ export interface LlmSettings {
 
 /** A persona's TTS voice: id + optional speed and style instructions
  * (instructions are honored by OpenAI, ignored by e.g. Kokoro). */
-export interface VoiceBlock {
-	voice?: string;
-	speed?: number;
-	instructions?: string;
-}
-
 /** Settings that follow the user across devices (unlike localStorage prefs). */
 export interface AdminUser {
 	username: string;
@@ -324,12 +318,79 @@ export interface UsageSummary {
 	}[];
 }
 
+/** One tunable in a provider's voice block. The server declares these so the
+ * settings form is generated — adding a provider needs no frontend change. */
+export interface VoiceFieldSpec {
+	key: string;
+	label: string;
+	kind: 'text' | 'longtext' | 'number' | 'slider' | 'bool';
+	default: string | number | boolean | null;
+	required: boolean;
+	min: number | null;
+	max: number | null;
+	step: number | null;
+	help: string | null;
+}
+
+export interface VoiceProvider {
+	name: string;
+	label: string;
+	default_base_url: string;
+	default_model: string;
+	supports_listing: boolean;
+	/** Can build a voice from a written description (ElevenLabs) */
+	supports_design: boolean;
+	fields: VoiceFieldSpec[];
+}
+
+/** One candidate from a voice-design pass; `audio` is a playable data: URL. */
+export interface DesignedVoice {
+	generated_voice_id: string;
+	audio: string;
+	duration_secs: number | null;
+}
+
+/** A voice block for whichever provider is active — shape varies by provider,
+ * so it's keyed loosely and rendered from `fields`. */
+export type VoiceValues = Record<string, string | number | boolean>;
+
+export interface ProviderVoice {
+	id: string;
+	name: string;
+	category: string | null;
+	description: string | null;
+	preview_url: string | null;
+	labels: Record<string, string>;
+	settings: VoiceValues;
+}
+
 export interface TtsSettings {
+	provider: string;
+	providers: VoiceProvider[];
+	/** Each provider's own stored setup, so switching restores rather than
+	 * carrying the previous provider's values across (or blanking the form
+	 * over data that is actually still there). */
+	connections: Record<
+		string,
+		{
+			base_url: string;
+			model: string;
+			api_key_set: boolean;
+			voices: Record<string, VoiceValues | null>;
+			gaps: Record<string, string[]>;
+			defaults: Record<string, VoiceValues>;
+		}
+	>;
 	base_url: string;
 	model: string;
 	api_key_set: boolean;
-	voices: Record<string, Required<VoiceBlock>>;
-	defaults: Record<string, Required<VoiceBlock>>;
+	/** null when the persona has no voice on the active provider */
+	voices: Record<string, VoiceValues | null>;
+	/** required fields still missing, per persona */
+	gaps: Record<string, string[]>;
+	/** each persona's written character, used to seed voice design */
+	descriptions: Record<string, string>;
+	defaults: Record<string, VoiceValues>;
 	managed: string[];
 	config_file: string | null;
 	config_error: string | null;
@@ -542,11 +603,25 @@ export const api = {
 	adminUsage: (days: number) => get<UsageSummary>(`/api/admin/usage?days=${days}`),
 	getTtsSettings: () => get<TtsSettings>('/api/settings/tts'),
 	setTtsSettings: (s: {
+		provider?: string;
 		base_url?: string;
 		model?: string;
 		api_key?: string;
-		voices?: Record<string, VoiceBlock>;
+		voices?: Record<string, VoiceValues>;
 	}) => send<TtsSettings>('PUT', '/api/settings/tts', s),
+	/** The active provider's selectable voices; 501 when it can't list them. */
+	listProviderVoices: () => get<ProviderVoice[]>('/api/settings/tts/voices'),
+	designVoice: (description: string, preview_text?: string) =>
+		send<DesignedVoice[]>('POST', '/api/settings/tts/design', {
+			description,
+			preview_text: preview_text || null
+		}),
+	keepDesignedVoice: (v: {
+		generated_voice_id: string;
+		name: string;
+		description: string;
+		rejected?: string[];
+	}) => send<{ voice_id: string }>('POST', '/api/settings/tts/design/keep', v),
 	/** Spoken audio for a persisted interpretation piece (-1 = whole picture).
 	 * Optional persona overrides the voice (text stays as written). */
 	readingAudio: (id: number, position: number, persona?: string | null) =>

@@ -1,4 +1,4 @@
-"""Persona-voiced audio for readings via an OpenAI-compatible TTS endpoint.
+"""Persona-voiced audio for readings, through a pluggable voice provider.
 
 Mirrors interpret.py's split: config resolution (file > admin UI/DB > env)
 separate from the API call. Generated audio is cached under
@@ -6,17 +6,25 @@ separate from the API call. Generated audio is cached under
 bounded by `tts.cache_max_mb` (default 256) — evicted pieces regenerate on
 demand, so the cache is never authoritative state.
 
+The *shape* of the provider call lives in tarot/voices/<provider>.py; this
+module owns everything provider-agnostic — config, voice resolution,
+chunking, caching, eviction and the usage ledger. One provider is active
+per instance:
+
     tts:
-      base_url: https://api.openai.com/v1
+      provider: openai          # or elevenlabs; default openai
+      base_url: https://api.openai.com/v1   # optional; adapter default
       model: gpt-4o-mini-tts
       api_key: "..."            # or api_key_env: TAROT_TTS_API_KEY
       cache_max_mb: 256
       voices:
-        alice:  {voice: coral, speed: 1.0, instructions: "..."}
-        selene: {voice: sage,  speed: 0.95, instructions: "..."}
+        alice:
+          openai:     {voice: marin, speed: 1.0, instructions: "..."}
+          elevenlabs: {voice_id: "...", stability: 0.4}
 
-`instructions` is OpenAI-only steering; compatible servers without it
-(e.g. Kokoro's kokoro-fastapi) ignore the field.
+A voice block written flat (no provider key) is read as the `openai`
+block — the only provider that existed before — so existing config files
+and stored settings keep working untouched.
 """
 
 import asyncio
@@ -27,15 +35,21 @@ import re
 
 import httpx
 
-from tarot import config as cfgfile
+from tarot import config as cfgfile, voices as voices_mod
 from tarot.decks import data_dir
 
 DEFAULT_MODEL = "gpt-4o-mini-tts"
 DEFAULT_CACHE_MB = 256
 TIMEOUT = 60.0
-# stay safely under gpt-4o-mini-tts's ~2000-token input cap (~4 chars/token)
+# Fallback only. The real cap comes from the active adapter, since it is a
+# property of the provider's model (3600 suits gpt-4o-mini-tts's ~2000-token
+# input cap; ElevenLabs allows 10k-40k depending on model).
 MAX_CHUNK_CHARS = 3600
 
+# Shipped per-persona defaults, per provider. Only `openai` can have them:
+# an ElevenLabs voice_id is account-specific, so a persona there is unset
+# until an admin configures it (and has no audio until then, by design —
+# substituting some premade voice would silently give Maud a stranger's).
 VOICE_DEFAULTS = {
     "alice": {
         "voice": "marin",
@@ -80,24 +94,96 @@ def cache_dir():
     return data_dir() / "tts-cache"
 
 
+def provider_name() -> str:
+    """Active voice provider, resolved file > DB > env. Unknown names fall
+    back to the default; the settings page reports the bad value rather
+    than every config() caller 500ing (/api/me is one of them)."""
+    name = str(
+        cfgfile.get("tts", "provider")
+        or db_setting("tts_provider")
+        or os.environ.get("TAROT_TTS_PROVIDER", "")
+    ).strip().lower()
+    # `name` must be non-empty AND registered — an unset value is not
+    # "known" merely because the lookup would fall back for us.
+    return name if (name and voices_mod.known(name)) else voices_mod.DEFAULT_PROVIDER
+
+
+def db_setting(key: str) -> str:
+    """db.get_setting without importing db at module scope."""
+    from tarot import db
+
+    return db.get_setting(key) or ""
+
+
+def env_setting(name: str, provider: str | None = None) -> str:
+    """A connection setting from the environment, per provider.
+
+    Same rule as setting_key: `TAROT_TTS_<NAME>_<PROVIDER>` for any provider,
+    with the bare `TAROT_TTS_<NAME>` belonging to the DEFAULT provider only.
+    Without that scoping, deploying both providers means OpenAI's base_url
+    (or key) silently applies to ElevenLabs as well.
+    """
+    provider = provider or provider_name()
+    scoped = os.environ.get(f"TAROT_TTS_{name.upper()}_{provider.upper()}", "")
+    if scoped:
+        return scoped
+    if provider == voices_mod.DEFAULT_PROVIDER:
+        return os.environ.get(f"TAROT_TTS_{name.upper()}", "")
+    return ""
+
+
+def setting_key(name: str, provider: str | None = None) -> str:
+    """Storage key for a provider-specific connection setting.
+
+    base_url and model belong to a provider, not to the instance: pointing
+    ElevenLabs at `https://api.openai.com/v1` (or handing it
+    `gpt-4o-mini-tts`) is nonsense, and leaving the previous provider's
+    values behind on a switch is how you get
+    `https://api.openai.com/v1/v1/text-to-speech/...`.
+
+    The default provider keeps the historic bare key so existing rows and
+    env vars keep working untouched.
+    """
+    provider = provider or provider_name()
+    if provider == voices_mod.DEFAULT_PROVIDER:
+        return f"tts_{name}"
+    return f"tts_{name}_{provider}"
+
+
 def config() -> dict | None:
     """TTS connection, resolved config file > admin UI (DB) > environment.
 
-    None when no base_url anywhere — the feature is off and all audio UI hides.
+    None when there is no base_url and the provider supplies no default —
+    the feature is off and all audio UI hides.
     """
     from tarot import crypto, db
 
+    provider = provider_name()
+    adapter = voices_mod.get_adapter(provider)
+
     file_url = cfgfile.get("tts", "base_url")
     base_url = str(
-        file_url or db.get_setting("tts_base_url") or os.environ.get("TAROT_TTS_BASE_URL", "")
+        file_url
+        or db.get_setting(setting_key("base_url", provider))
+        or env_setting("base_url", provider)
     ).rstrip("/")
+    if not base_url:
+        # A provider with a canonical endpoint (ElevenLabs) needs only a key,
+        # so an explicit base_url is optional there. The OpenAI-compatible
+        # adapter keeps requiring one: "compatible" means "could be anywhere",
+        # and defaulting it to OpenAI would silently enable the feature and
+        # start spending against a key meant for a local server.
+        base_url = adapter.default_base_url if adapter.name != "openai" else ""
     if not base_url:
         return None
 
     file_key = cfgfile.tts_api_key()
     if file_key is None:
-        stored = db.get_setting("tts_api_key")
-        api_key = crypto.decrypt(stored) if stored else os.environ.get("TAROT_TTS_API_KEY", "")
+        # Keyed per provider: different backends mean different accounts, and
+        # handing ElevenLabs an OpenAI key (or the reverse) on a switch would
+        # fail in a confusing way.
+        stored = db.get_setting(setting_key("api_key", provider))
+        api_key = crypto.decrypt(stored) if stored else env_setting("api_key", provider)
     else:
         api_key = file_key
 
@@ -111,11 +197,13 @@ def config() -> dict | None:
         cache_mb = DEFAULT_CACHE_MB
 
     return {
+        "provider": provider,
         "base_url": base_url,
         "model": str(
             cfgfile.get("tts", "model")
-            or db.get_setting("tts_model")
-            or os.environ.get("TAROT_TTS_MODEL", "")
+            or db.get_setting(setting_key("model", provider))
+            or env_setting("model", provider)
+            or adapter.default_model
             or DEFAULT_MODEL
         ),
         "api_key": api_key,
@@ -137,8 +225,30 @@ def _normalize(block: dict | None, base: dict) -> dict:
     return out
 
 
-def resolve_voice(persona: str | None, owner: str) -> dict:
-    """The voice block for a persona: file > DB > shipped defaults.
+def _for_provider(block: dict | None, provider: str) -> dict | None:
+    """Pull one provider's block out of a stored/configured voice entry.
+
+    Entries are `{provider: {...}}`, but everything written before this
+    feature is a FLAT block and means openai — the only provider that
+    existed. Detected by shape rather than by a version marker, so no
+    stored data has to be rewritten.
+    """
+    if not isinstance(block, dict):
+        return None
+    if any(isinstance(v, dict) for v in block.values()):
+        nested = block.get(provider)
+        return nested if isinstance(nested, dict) else None
+    return block if provider == voices_mod.DEFAULT_PROVIDER else None
+
+
+def resolve_voice(persona: str | None, owner: str,
+                  provider: str | None = None) -> dict | None:
+    """The voice block for a persona under a provider (the active one unless
+    `provider` is given): file > DB > shipped defaults.
+
+    Returns None when the provider needs a value we don't have (an
+    ElevenLabs voice_id, say) — callers surface that as "this persona has
+    no voice configured" rather than substituting someone else's.
 
     Unknown/absent persona (including the retired "custom") falls back to
     the instance default persona.
@@ -148,19 +258,86 @@ def resolve_voice(persona: str | None, owner: str) -> dict:
 
     if persona not in VOICE_DEFAULTS:
         persona = default_persona()
-    base = VOICE_DEFAULTS[persona]
+
+    provider = provider or provider_name()
+    adapter = voices_mod.get_adapter(provider)
+
+    # Shipped defaults exist for openai only (see VOICE_DEFAULTS).
+    block: dict = dict(VOICE_DEFAULTS[persona]) if provider == voices_mod.DEFAULT_PROVIDER else {}
 
     stored = db.get_setting(f"tts_voice_{persona}")
     if stored:
         try:
-            base = _normalize(json.loads(stored), base)
+            found = _for_provider(json.loads(stored), provider)
         except ValueError:
-            pass
+            found = None
+        if found:
+            block = {**block, **found}
 
     file_voices = cfgfile.get("tts", "voices")
-    if isinstance(file_voices, dict) and isinstance(file_voices.get(persona), dict):
-        base = _normalize(file_voices[persona], base)
-    return _normalize({}, base)
+    if isinstance(file_voices, dict):
+        found = _for_provider(file_voices.get(persona), provider)
+        if found:
+            block = {**block, **found}
+
+    if adapter.missing_required(block):
+        return None
+    return adapter.normalize(block)
+
+
+def persona_description(persona: str | None) -> str:
+    """The persona's written character — its OpenAI `instructions` text,
+    wherever configured (file > DB > shipped).
+
+    Kept provider-independent on purpose: it is the app's description of how
+    this reader sounds, and providers that design a voice from prose can use
+    it directly rather than having it sit inert.
+    """
+    from tarot.interpret import default_persona
+
+    if persona not in VOICE_DEFAULTS:
+        persona = default_persona()
+    text = VOICE_DEFAULTS[persona].get("instructions", "")
+    stored = db_setting(f"tts_voice_{persona}")
+    if stored:
+        try:
+            block = _for_provider(json.loads(stored), voices_mod.DEFAULT_PROVIDER)
+        except ValueError:
+            block = None
+        if block and block.get("instructions"):
+            text = str(block["instructions"])
+    file_voices = cfgfile.get("tts", "voices")
+    if isinstance(file_voices, dict):
+        block = _for_provider(file_voices.get(persona), voices_mod.DEFAULT_PROVIDER)
+        if block and block.get("instructions"):
+            text = str(block["instructions"])
+    return text
+
+
+def voice_gap(persona: str | None, provider: str | None = None) -> list[str]:
+    """Required fields a provider is missing for this persona — what to tell
+    an admin after a provider switch."""
+    from tarot.interpret import default_persona
+
+    if persona not in VOICE_DEFAULTS:
+        persona = default_persona()
+    provider = provider or provider_name()
+    adapter = voices_mod.get_adapter(provider)
+    block: dict = dict(VOICE_DEFAULTS[persona]) if provider == voices_mod.DEFAULT_PROVIDER else {}
+    stored = db_setting(f"tts_voice_{persona}")
+    if stored:
+        try:
+            found = _for_provider(json.loads(stored), provider)
+        except ValueError:
+            found = None
+        if found:
+            block = {**block, **found}
+    file_voices = cfgfile.get("tts", "voices")
+    if isinstance(file_voices, dict):
+        found = _for_provider(file_voices.get(persona), provider)
+        if found:
+            block = {**block, **found}
+    return adapter.missing_required(block)
 
 
 _MD_PATTERNS = [
@@ -200,25 +377,29 @@ def build_script(intro: str, text: str) -> str:
     return f"{intro}\n\n{strip_markdown(text)}".strip()
 
 
-def _chunks(script: str) -> list[str]:
-    """Split at paragraph, then sentence, then hard boundaries — never drops text."""
-    if len(script) <= MAX_CHUNK_CHARS:
+def _chunks(script: str, max_chars: int | None = None) -> list[str]:
+    """Split at paragraph, then sentence, then hard boundaries — never drops text.
+
+    `max_chars` comes from the active adapter: chunking a 10k-capable
+    provider at 3600 would insert prosody seams for nothing.
+    """
+    cap = max_chars or MAX_CHUNK_CHARS
+    if len(script) <= cap:
         return [script]
     pieces: list[str] = []
     for para in re.split(r"\n\n+", script):
-        if len(para) <= MAX_CHUNK_CHARS:
+        if len(para) <= cap:
             pieces.append(para)
             continue
         for sentence in re.split(r"(?<=[.!?])\s+", para):
             # hard-split anything still over the cap (no sentence breaks)
             pieces.extend(
-                sentence[i : i + MAX_CHUNK_CHARS]
-                for i in range(0, len(sentence), MAX_CHUNK_CHARS)
+                sentence[i : i + cap] for i in range(0, len(sentence), cap)
             )
     parts: list[str] = []
     current = ""
     for piece in pieces:
-        if current and len(current) + len(piece) + 2 > MAX_CHUNK_CHARS:
+        if current and len(current) + len(piece) + 2 > cap:
             parts.append(current)
             current = piece
         else:
@@ -228,28 +409,44 @@ def _chunks(script: str) -> list[str]:
     return parts
 
 
+def derive_seed(key: str, index: int) -> int:
+    """A stable seed for one piece of one script.
+
+    Providers that support seeded sampling then reproduce audio on
+    re-render instead of drifting — which matters because the cache is
+    not authoritative: evicted pieces regenerate, and generative TTS
+    drift between renders is audible (seen after the v0.11.2 cache-key
+    change).
+    """
+    digest = hashlib.sha256(f"{key}:{index}".encode()).digest()
+    return int.from_bytes(digest[:4], "big")
+
+
 async def synthesize(script: str, voice: dict, cfg: dict,
                      usage_meta: dict | None = None) -> bytes:
     """Generate MP3 for the script, splitting over-cap text and concatenating
     the segments (same codec params -> a valid stream). With `usage_meta`
     ({owner, kind, reading_id?}), writes one ledger row per provider call —
-    cache hits never reach here, so only real spend is recorded."""
-    headers = {"Content-Type": "application/json"}
-    if cfg["api_key"]:
-        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    cache hits never reach here, so only real spend is recorded.
+
+    The request shape belongs to the active adapter; chunk size, prosody
+    continuity and seeding are all provider capabilities.
+    """
+    adapter = voices_mod.get_adapter(cfg.get("provider"))
+    parts = _chunks(script, adapter.max_chunk_chars(cfg["model"]))
+    key = cache_key(script, voice, cfg)
     out = b""
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        for chunk in _chunks(script):
-            body = {
-                "model": cfg["model"],
-                "voice": voice["voice"],
-                "input": chunk,
-                "speed": voice["speed"],
-                "response_format": "mp3",
-            }
-            if voice.get("instructions"):
-                body["instructions"] = voice["instructions"]
-            resp = await client.post(f"{cfg['base_url']}/audio/speech", json=body, headers=headers)
+        for i, chunk in enumerate(parts):
+            req = adapter.build_request(
+                script=chunk, voice=voice, cfg=cfg,
+                # Neighbouring text keeps prosody continuous across seams.
+                previous=(parts[i - 1] if i and adapter.supports_continuity else None),
+                next=(parts[i + 1] if i + 1 < len(parts) and adapter.supports_continuity else None),
+                seed=(derive_seed(key, i) if adapter.supports_seed else None),
+            )
+            resp = await client.post(req.url, json=req.json,
+                                     headers=req.headers, params=req.params or None)
             resp.raise_for_status()
             out += resp.content
             if usage_meta:
@@ -261,7 +458,10 @@ async def synthesize(script: str, voice: dict, cfg: dict,
                     await run_in_threadpool(
                         db.record_usage,
                         owner=usage_meta["owner"], component="tts",
-                        kind=usage_meta.get("kind", "speak"), model=cfg["model"],
+                        kind=usage_meta.get("kind", "speak"),
+                        # Provider-qualified so the usage page stays
+                        # meaningful across a switch.
+                        model=usage_model(cfg),
                         reading_id=usage_meta.get("reading_id"),
                         characters=len(chunk), audio_bytes=len(resp.content),
                     )
@@ -270,14 +470,30 @@ async def synthesize(script: str, voice: dict, cfg: dict,
     return out
 
 
+def usage_model(cfg: dict) -> str:
+    """Ledger label. Unqualified for openai so historical rows keep matching."""
+    provider = cfg.get("provider") or voices_mod.DEFAULT_PROVIDER
+    return cfg["model"] if provider == voices_mod.DEFAULT_PROVIDER else f"{provider}:{cfg['model']}"
+
+
 def cache_key(script: str, voice: dict, cfg: dict) -> str:
     """Content address of one audio piece. base_url is part of the identity:
-    the same model name on a different provider is different audio."""
-    payload = json.dumps(
-        {"script": script, "voice": voice, "model": cfg["model"], "base_url": cfg["base_url"]},
-        sort_keys=True,
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()
+    the same model name on a different provider is different audio.
+
+    `provider` is omitted for openai ON PURPOSE, so hashes computed before
+    pluggable providers stay bit-identical and the existing cache is not
+    orphaned — v0.11.2 orphaned it once and every piece re-rendered on
+    first play with audible drift. Any other provider has a different
+    base_url anyway, so identity is still sound.
+    """
+    payload: dict = {
+        "script": script, "voice": voice,
+        "model": cfg["model"], "base_url": cfg["base_url"],
+    }
+    provider = cfg.get("provider") or voices_mod.DEFAULT_PROVIDER
+    if provider != voices_mod.DEFAULT_PROVIDER:
+        payload["provider"] = provider
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 # One generation per piece even under concurrent requests; the dict itself is

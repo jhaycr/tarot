@@ -22,6 +22,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from tarot import auth, bookimport, config as cfgfile, crypto, db, dedupe, importer, interpret as interp, limits, sessions, sse, tts, users
 from tarot import books as books_mod
+from tarot import voices as voices_mod
 from tarot.books import BookConflict, BookForbidden, user_books_dir
 from tarot.auth import (
     LOGOUT_URL,
@@ -1360,12 +1361,6 @@ def admin_usage(user: User, days: int = 30):
     return db.usage_summary(max(1, min(days, 365)))
 
 
-class VoiceBlock(BaseModel):
-    voice: str | None = None
-    speed: float | None = Field(default=None, ge=0.25, le=4.0)
-    instructions: str | None = Field(default=None, max_length=2000)
-
-
 class SaveReadingRequest(BaseModel):
     deck: str
     spread: str
@@ -1628,8 +1623,37 @@ def _audio_response(request: Request, path, key: str):
 def _tts_config_or_409() -> dict:
     cfg = tts.config()
     if cfg is None:
-        raise HTTPException(409, "TTS is not configured")
+        # Only one thing can produce this: no base_url. Say so, and say which
+        # provider needs it — "not configured" alone sent Josh looking at his
+        # API key when the provider was the problem.
+        provider = tts.provider_name()
+        adapter = voices_mod.get_adapter(provider)
+        if not adapter.default_base_url or provider == voices_mod.DEFAULT_PROVIDER:
+            raise HTTPException(
+                409,
+                f"TTS is not configured — the {adapter.label} provider needs a Base URL "
+                f"(e.g. https://api.openai.com/v1). Set it in Settings, or switch provider.",
+            )
+        raise HTTPException(409, f"TTS is not configured for {adapter.label}")
     return cfg
+
+
+def _voice_or_409(persona: str | None, owner: str) -> dict:
+    """The persona's voice under the active provider.
+
+    A provider switch can leave a persona unvoiced (an ElevenLabs voice_id
+    is account-specific, so nothing can be shipped as a default). Say which
+    persona and which field rather than substituting some other voice —
+    hearing Maud in a stranger's voice would be worse than an error."""
+    voice = tts.resolve_voice(persona, owner)
+    if voice is None:
+        missing = ", ".join(tts.voice_gap(persona)) or "voice settings"
+        raise HTTPException(
+            409,
+            f"No voice configured for '{persona or 'default'}' on the "
+            f"{tts.provider_name()} provider — set {missing} in Settings.",
+        )
+    return voice
 
 
 @app.get("/api/readings/{reading_id}/audio/{position}")
@@ -1652,9 +1676,9 @@ async def reading_audio(reading_id: int, position: int, request: Request, user: 
     script = tts.build_script(tts.spoken_intro(card), row["text"])
     # explicit persona = the requester's choice; stored persona = whoever wrote it
     if persona:
-        voice = await run_in_threadpool(tts.resolve_voice, persona, user)
+        voice = await run_in_threadpool(_voice_or_409, persona, user)
     else:
-        voice = await run_in_threadpool(tts.resolve_voice, row["persona"], reading["owner"])
+        voice = await run_in_threadpool(_voice_or_409, row["persona"], reading["owner"])
     key = tts.cache_key(script, voice, cfg)
     cached = (tts.cache_dir() / f"{key}.mp3").is_file()
     # An unchanged piece the browser already holds is a 304 before any
@@ -1686,7 +1710,7 @@ async def tts_speak(req: TtsRequest, user: User):
     same text is free."""
     cfg = _tts_config_or_409()
     persona = req.persona or interp.default_persona()
-    voice = await run_in_threadpool(tts.resolve_voice, persona, user)
+    voice = await run_in_threadpool(_voice_or_409, persona, user)
     script = tts.build_script("Your reading.", req.text)
     key = tts.cache_key(script, voice, cfg)
     if not (tts.cache_dir() / f"{key}.mp3").is_file():
@@ -1701,51 +1725,250 @@ async def tts_speak(req: TtsRequest, user: User):
 
 
 class TtsSettingsRequest(BaseModel):
+    provider: str | None = None
     base_url: str | None = None
     model: str | None = None
     api_key: str | None = None  # write-only; empty string clears the stored key
-    voices: dict[str, VoiceBlock] | None = None  # keys: alice / selene
+    # Free-form per-persona blocks: the shape belongs to the active
+    # provider's adapter (voice/speed/instructions for openai, voice_id and
+    # dials for elevenlabs), so it's validated against adapter.fields rather
+    # than a fixed model here.
+    voices: dict[str, dict] | None = None
 
 
 def _file_owns_voices() -> list[str]:
+    """Personas whose block for the ACTIVE provider comes from config.yaml."""
     file_voices = cfgfile.get("tts", "voices")
     if not isinstance(file_voices, dict):
         return []
-    return [p for p in tts.VOICE_DEFAULTS if isinstance(file_voices.get(p), dict)]
+    provider = tts.provider_name()
+    return [p for p in tts.VOICE_DEFAULTS
+            if tts._for_provider(file_voices.get(p), provider) is not None]
+
+
+def _provider_descriptor(adapter) -> dict:
+    """Everything the settings UI needs to render a provider's voice form,
+    so adding an adapter needs no frontend work."""
+    return {
+        "name": adapter.name,
+        "label": adapter.label,
+        "default_base_url": adapter.default_base_url,
+        "default_model": adapter.default_model,
+        "supports_listing": adapter.supports_listing,
+        "supports_design": adapter.supports_design,
+        "fields": [
+            {"key": f.key, "label": f.label, "kind": f.kind, "default": f.default,
+             "required": f.required, "min": f.min, "max": f.max, "step": f.step,
+             "help": f.help}
+            for f in adapter.fields
+        ],
+    }
 
 
 @app.get("/api/settings/tts")
 def get_tts_settings(user: User):
     require_admin(user)
-    managed = _managed("tts", "base_url", "model")
+    managed = _managed("tts", "base_url", "model", "provider")
     if cfgfile.tts_api_key() is not None:
         managed.append("api_key")
     managed += [f"voice_{p}" for p in _file_owns_voices()]
+    provider = tts.provider_name()
+    adapter = voices_mod.get_adapter(provider)
+    # Per-provider connection settings, so switching provider in the UI
+    # restores that provider's own values instead of carrying the previous
+    # one's across (which would then be saved under the wrong provider).
+    connections = {
+        a.name: {
+            "base_url": db.get_setting(tts.setting_key("base_url", a.name)) or "",
+            "model": db.get_setting(tts.setting_key("model", a.name)) or "",
+            "api_key_set": bool(db.get_setting(tts.setting_key("api_key", a.name))
+                                or tts.env_setting("api_key", a.name)),
+            # Every provider's voice blocks, so switching in the UI restores
+            # them instead of showing empty fields over intact stored data.
+            "voices": {p: tts.resolve_voice(p, user, a.name) for p in tts.VOICE_DEFAULTS},
+            "gaps": {p: tts.voice_gap(p, a.name) for p in tts.VOICE_DEFAULTS},
+            "defaults": {p: a.normalize(tts.VOICE_DEFAULTS[p]
+                                        if a.name == voices_mod.DEFAULT_PROVIDER else {})
+                         for p in tts.VOICE_DEFAULTS},
+        }
+        for a in voices_mod.all_adapters()
+    }
     return {
+        "provider": provider,
+        "providers": [_provider_descriptor(a) for a in voices_mod.all_adapters()],
+        "connections": connections,
+        # base_url/model are stored per provider — see tts.setting_key.
         "base_url": cfgfile.get("tts", "base_url")
-        or db.get_setting("tts_base_url")
-        or os.environ.get("TAROT_TTS_BASE_URL", ""),
+        or db.get_setting(tts.setting_key("base_url", provider))
+        or tts.env_setting("base_url", provider),
         "model": cfgfile.get("tts", "model")
-        or db.get_setting("tts_model")
-        or os.environ.get("TAROT_TTS_MODEL", "")
+        or db.get_setting(tts.setting_key("model", provider))
+        or tts.env_setting("model", provider)
+        or adapter.default_model
         or tts.DEFAULT_MODEL,
         "api_key_set": bool(
             cfgfile.tts_api_key()
             or db.get_setting("tts_api_key")
-            or os.environ.get("TAROT_TTS_API_KEY")
+            or tts.env_setting("api_key", provider)
         ),
+        # Blocks for the ACTIVE provider; null where a persona isn't voiced
+        # on it yet (with `gaps` naming what's missing).
         "voices": {p: tts.resolve_voice(p, user) for p in tts.VOICE_DEFAULTS},
-        "defaults": tts.VOICE_DEFAULTS,
+        "gaps": {p: tts.voice_gap(p) for p in tts.VOICE_DEFAULTS},
+        # Each persona's written character, from wherever it's configured for
+        # the OpenAI provider. It seeds voice design on providers that build a
+        # voice from a description — the same prose, applied at design time.
+        "descriptions": {p: tts.persona_description(p) for p in tts.VOICE_DEFAULTS},
+        "defaults": {p: adapter.normalize(tts.VOICE_DEFAULTS[p]
+                                          if provider == voices_mod.DEFAULT_PROVIDER else {})
+                     for p in tts.VOICE_DEFAULTS},
         "managed": managed,
         "config_file": str(cfgfile.config_path()) if cfgfile.exists() else None,
         "config_error": cfgfile.error() or None,
     }
 
 
+@app.get("/api/settings/tts/voices")
+async def list_tts_voices(user: User):
+    """The active provider's selectable voices, for the settings picker.
+    501 when the provider can't enumerate them — the UI falls back to a
+    free-text field."""
+    require_admin(user)
+    cfg = _tts_config_or_409()
+    adapter = voices_mod.get_adapter(cfg.get("provider"))
+    if not adapter.supports_listing:
+        raise HTTPException(501, f"{adapter.label} cannot list voices")
+    try:
+        found = await adapter.list_voices(cfg)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, _provider_error("Listing voices", e))
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Listing voices failed: {e}")
+    return [
+        {"id": v.id, "name": v.name, "category": v.category,
+         "description": v.description, "preview_url": v.preview_url,
+         "labels": v.labels, "settings": v.settings}
+        for v in found
+    ]
+
+
+class DesignVoiceRequest(BaseModel):
+    description: str = Field(min_length=20, max_length=2000)
+    preview_text: str | None = Field(default=None, max_length=1000)
+
+
+class KeepVoiceRequest(BaseModel):
+    generated_voice_id: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=20, max_length=2000)
+    rejected: list[str] | None = None
+
+
+def _provider_error(what: str, e: httpx.HTTPStatusError) -> str:
+    """A readable message from a provider error body.
+
+    Providers nest the useful part: ElevenLabs returns
+    {"detail": {"type": ..., "message": ...}}, so naively formatting `detail`
+    prints a raw dict at the user. Some failures are also about the account
+    rather than the request, and deserve the way around them.
+    """
+    body: object = None
+    try:
+        body = e.response.json()
+    except Exception:
+        return f"{what} failed: {e.response.text[:200] or e}"
+    detail = body.get("detail", body) if isinstance(body, dict) else body
+    code = message = ""
+    if isinstance(detail, dict):
+        code = str(detail.get("code") or detail.get("status") or "")
+        message = str(detail.get("message") or "")
+    else:
+        message = str(detail)
+    if code in ("feature_not_available", "feature_unavailable"):
+        return (
+            f"{what} needs a paid provider plan — {message} "
+            "You can still pick any voice from your library: add voices on the "
+            "provider's site (its Voice Library is free to browse), then choose "
+            "them from the dropdown here."
+        )
+    if code in ("quota_exceeded", "too_many_requests"):
+        return f"{what} failed — provider quota exhausted. {message}"
+    # Scoped API keys fail with a plain 401, which reads as "wrong key" and
+    # sends you to re-paste a key that was fine. The provider names the
+    # missing scope — surface it and say where it's changed.
+    if str(detail.get("status") if isinstance(detail, dict) else "") == "missing_permissions":
+        return (
+            f"{what} failed — your API key lacks a required permission. {message} "
+            "API keys are scoped: edit the key on the provider's site and enable "
+            "that permission (voices_read to list voices, text_to_speech to "
+            "generate audio)."
+        )
+    return f"{what} failed: {message or detail}"
+
+
+def _design_adapter(cfg: dict):
+    adapter = voices_mod.get_adapter(cfg.get("provider"))
+    if not adapter.supports_design:
+        raise HTTPException(501, f"{adapter.label} cannot design voices from a description")
+    return adapter
+
+
+@app.post("/api/settings/tts/design")
+async def design_voice(req: DesignVoiceRequest, user: User):
+    """Candidate voices built from a written description — normally a
+    persona's own `instructions` prose, so its character carries over to a
+    provider that has no per-request steering field."""
+    require_admin(user)
+    cfg = _tts_config_or_409()
+    adapter = _design_adapter(cfg)
+    try:
+        found = await adapter.design_voices(cfg, req.description.strip(),
+                                            (req.preview_text or "").strip() or None)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, _provider_error("Voice design", e))
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Voice design failed: {e}")
+    # Previews are real generated audio, so they cost credits — record them.
+    await run_in_threadpool(
+        db.record_usage, owner=user, component="tts", kind="voice_design",
+        model=tts.usage_model(cfg), characters=len(req.description),
+        audio_bytes=sum(len(v.audio_base64) * 3 // 4 for v in found),
+    )
+    return [
+        {"generated_voice_id": v.generated_voice_id,
+         "audio": f"data:{v.media_type};base64,{v.audio_base64}",
+         "duration_secs": v.duration_secs}
+        for v in found
+    ]
+
+
+@app.post("/api/settings/tts/design/keep")
+async def keep_designed_voice(req: KeepVoiceRequest, user: User):
+    """Save a designed candidate to the account, returning its permanent id."""
+    require_admin(user)
+    cfg = _tts_config_or_409()
+    adapter = _design_adapter(cfg)
+    try:
+        voice_id = await adapter.keep_designed_voice(
+            cfg, req.generated_voice_id.strip(), req.name.strip(),
+            req.description.strip(), req.rejected or [])
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, _provider_error("Saving the voice", e))
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Saving the voice failed: {e}")
+    if not voice_id:
+        raise HTTPException(502, "provider returned no voice id")
+    return {"voice_id": voice_id}
+
+
 @app.put("/api/settings/tts")
 def set_tts_settings(req: TtsSettingsRequest, user: User):
     require_admin(user)
-    _reject_managed("tts", base_url=req.base_url, model=req.model)
+    _reject_managed("tts", base_url=req.base_url, model=req.model,
+                    provider=req.provider)
+    if req.provider is not None and not voices_mod.known(req.provider):
+        known = ", ".join(a.name for a in voices_mod.all_adapters())
+        raise HTTPException(400, f"unknown provider '{req.provider}' — known: {known}")
     if req.api_key is not None and cfgfile.tts_api_key() is not None:
         raise HTTPException(
             409, f"api_key managed by {cfgfile.config_path()} — edit the config file"
@@ -1758,17 +1981,47 @@ def set_tts_settings(req: TtsSettingsRequest, user: User):
                 409,
                 f"voices ({', '.join(clashes)}) managed by {cfgfile.config_path()} — edit the config file",
             )
+    if req.provider is not None:
+        db.set_setting("tts_provider", req.provider.strip().lower())
+    # Connection settings and voice blocks are all stored per provider, so
+    # editing one provider's setup never disturbs the other's — switching
+    # back restores exactly what was there.
+    provider = req.provider.strip().lower() if req.provider is not None else tts.provider_name()
     if req.base_url is not None:
-        db.set_setting("tts_base_url", req.base_url.strip())
+        db.set_setting(tts.setting_key("base_url", provider), req.base_url.strip())
     if req.model is not None:
-        db.set_setting("tts_model", req.model.strip())
+        db.set_setting(tts.setting_key("model", provider), req.model.strip())
     if req.api_key is not None:
-        db.set_setting("tts_api_key", crypto.encrypt(req.api_key.strip()) if req.api_key.strip() else "")
+        db.set_setting(tts.setting_key("api_key", provider),
+                       crypto.encrypt(req.api_key.strip()) if req.api_key.strip() else "")
+
+    adapter = voices_mod.get_adapter(provider)
+    valid = {f.key for f in adapter.fields}
     for persona, block in (req.voices or {}).items():
         if persona not in tts.VOICE_DEFAULTS:
             raise HTTPException(400, f"unknown persona '{persona}'")
-        values = {k: v for k, v in block.model_dump().items() if v is not None}
-        db.set_setting(f"tts_voice_{persona}", json.dumps(values) if values else "")
+        unknown = sorted(set(block) - valid)
+        if unknown:
+            raise HTTPException(
+                400,
+                f"{adapter.label} has no voice setting(s) {', '.join(unknown)} "
+                f"— expected: {', '.join(sorted(valid))}",
+            )
+        stored = db.get_setting(f"tts_voice_{persona}")
+        try:
+            existing = json.loads(stored) if stored else {}
+        except ValueError:
+            existing = {}
+        # A legacy FLAT block means openai; lift it into the nested shape
+        # before merging so nothing written pre-provider is lost.
+        if existing and not any(isinstance(v, dict) for v in existing.values()):
+            existing = {voices_mod.DEFAULT_PROVIDER: existing}
+        values = {k: v for k, v in block.items() if v is not None}
+        if values:
+            existing[provider] = values
+        else:
+            existing.pop(provider, None)
+        db.set_setting(f"tts_voice_{persona}", json.dumps(existing) if existing else "")
     return get_tts_settings(user)
 
 

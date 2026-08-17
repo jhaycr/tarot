@@ -31,13 +31,19 @@ additive.
       system_prompt: |          # replaces the default persona's prompt
         ...
     tts:
-      base_url: https://api.openai.com/v1
+      provider: openai          # or elevenlabs; default openai
+      base_url: https://api.openai.com/v1   # optional for elevenlabs
       model: gpt-4o-mini-tts
       api_key: "..."            # or api_key_env: TAROT_TTS_API_KEY
       cache_max_mb: 256
-      voices:
-        alice:  {voice: coral, speed: 1.0, instructions: "..."}
-        selene: {voice: sage,  speed: 0.95, instructions: "..."}
+      voices:                   # per persona, per provider
+        alice:
+          openai:     {voice: marin, speed: 1.0, instructions: "..."}
+          elevenlabs: {voice_id: "...", stability: 0.4, style: 0.2}
+        selene:
+          openai:     {voice: sage,  speed: 0.95, instructions: "..."}
+      # A flat block (no provider key) is read as the openai block, so
+      # pre-existing config keeps working untouched.
 
 A malformed file is reported rather than fatal: the app keeps serving on the
 previous behaviour and surfaces the parse error through /api/settings/*, so a

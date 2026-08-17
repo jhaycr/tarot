@@ -1,5 +1,15 @@
 <script lang="ts">
-	import { api, type AdminUser, type ReassignReport, type UsageSummary } from '$lib/api';
+	import {
+		api,
+		type AdminUser,
+		type DesignedVoice,
+		type ProviderVoice,
+		type ReassignReport,
+		type TtsSettings,
+		type UsageSummary,
+		type VoiceProvider,
+		type VoiceValues
+	} from '$lib/api';
 
 
 	let isAdmin = $state(false);
@@ -26,8 +36,23 @@
 	let ttsSaved = $state(true);
 	let ttsError = $state('');
 	let ttsManaged = $state<string[]>([]);
-	// editable copies of the alice/selene voice blocks
-	let voices = $state<Record<string, { voice: string; speed: number; instructions: string }>>({});
+	let ttsProvider = $state('openai');
+	let ttsProviders = $state<VoiceProvider[]>([]);
+	let ttsGaps = $state<Record<string, string[]>>({});
+	let ttsConnections = $state<TtsSettings['connections']>({});
+	// Editable per-persona blocks for the ACTIVE provider. Shape varies by
+	// provider, so the form is generated from its declared fields.
+	let voices = $state<Record<string, VoiceValues>>({});
+	let providerVoices = $state<ProviderVoice[]>([]);
+	let voiceListError = $state('');
+	let previewAudio: HTMLAudioElement | null = null;
+	// Voice design (providers that build a voice from prose)
+	let descriptions = $state<Record<string, string>>({});
+	let designOpen = $state('');           // persona whose panel is open
+	let designText = $state('');
+	let designBusy = $state(false);
+	let designError = $state('');
+	let designCandidates = $state<DesignedVoice[]>([]);
 
 	const managed = (f: string) => llmManaged.includes(f);
 	const tmanaged = (f: string) => ttsManaged.includes(f);
@@ -210,18 +235,127 @@
 
 	async function refreshTts() {
 		const s = await api.getTtsSettings();
+		ttsProvider = s.provider;
+		ttsProviders = s.providers;
+		ttsConnections = s.connections;
 		ttsBaseUrl = s.base_url;
 		ttsModel = s.model;
 		ttsKeySet = s.api_key_set;
 		ttsManaged = s.managed;
+		ttsGaps = s.gaps;
+		// Blocks are provider-shaped; start from the provider's defaults so
+		// every declared field has a value to bind to.
 		voices = Object.fromEntries(
-			Object.entries(s.voices).map(([p, v]) => [
-				p,
-				{ voice: v.voice ?? '', speed: v.speed ?? 1, instructions: v.instructions ?? '' }
-			])
+			Object.entries(s.voices).map(([p, v]) => [p, { ...(s.defaults[p] ?? {}), ...(v ?? {}) }])
 		);
 		configFile = s.config_file;
 		configError = configError || s.config_error;
+		descriptions = s.descriptions;
+		providerVoices = [];
+		voiceListError = '';
+		if (activeProvider?.supports_listing) loadProviderVoices();
+	}
+
+	/** Seed the design prompt from the persona's own written character —
+	 * the same prose that steers OpenAI, reused at design time. */
+	function openDesign(persona: string) {
+		designOpen = persona;
+		designText = descriptions[persona] ?? '';
+		designCandidates = [];
+		designError = '';
+	}
+
+	async function runDesign() {
+		designBusy = true;
+		designError = '';
+		designCandidates = [];
+		try {
+			designCandidates = await api.designVoice(designText);
+		} catch (e) {
+			designError = e instanceof Error ? e.message : String(e);
+		} finally {
+			designBusy = false;
+		}
+	}
+
+	async function keepDesigned(persona: string, chosen: DesignedVoice) {
+		designBusy = true;
+		designError = '';
+		try {
+			const { voice_id } = await api.keepDesignedVoice({
+				generated_voice_id: chosen.generated_voice_id,
+				name: `Tarotarium ${persona}`,
+				description: designText,
+				rejected: designCandidates
+					.filter((c) => c.generated_voice_id !== chosen.generated_voice_id)
+					.map((c) => c.generated_voice_id)
+			});
+			voices[persona] = { ...voices[persona], voice_id };
+			ttsSaved = false;
+			designOpen = '';
+			designCandidates = [];
+			await loadProviderVoices();
+		} catch (e) {
+			designError = e instanceof Error ? e.message : String(e);
+		} finally {
+			designBusy = false;
+		}
+	}
+
+	/** The active provider's field specs drive the whole form. */
+	const activeProvider = $derived(ttsProviders.find((p) => p.name === ttsProvider));
+
+	async function loadProviderVoices() {
+		voiceListError = '';
+		try {
+			providerVoices = await api.listProviderVoices();
+		} catch (e) {
+			// Not fatal: the form falls back to a free-text field.
+			providerVoices = [];
+			voiceListError = e instanceof Error ? e.message : String(e);
+		}
+	}
+
+	/** Switching provider re-renders the form against that provider's OWN
+	 * stored connection and voice blocks. Nothing is carried across — sending
+	 * the previous provider's model/base_url would save them under the new
+	 * one (which is how ElevenLabs ended up labelled gpt-4o-mini-tts). */
+	function pickProvider(name: string) {
+		ttsProvider = name;
+		ttsSaved = false;
+		const conn = ttsConnections[name];
+		ttsBaseUrl = conn?.base_url ?? '';
+		ttsModel = conn?.model ?? '';
+		ttsKeySet = conn?.api_key_set ?? false;
+		ttsApiKey = '';
+		ttsGaps = conn?.gaps ?? {};
+		// That provider's OWN stored blocks (falling back to its defaults),
+		// never the previous provider's values and never blanks over data
+		// that is still on the server.
+		voices = Object.fromEntries(
+			Object.keys(conn?.defaults ?? voices).map((persona) => [
+				persona,
+				{ ...(conn?.defaults?.[persona] ?? {}), ...(conn?.voices?.[persona] ?? {}) }
+			])
+		);
+		providerVoices = [];
+		voiceListError = '';
+		designOpen = '';
+		if (ttsProviders.find((x) => x.name === name)?.supports_listing) loadProviderVoices();
+	}
+
+	function applyVoicePreset(persona: string, voiceId: string) {
+		const v = providerVoices.find((x) => x.id === voiceId);
+		if (!v) return;
+		voices[persona] = { ...voices[persona], ...v.settings, voice_id: v.id };
+		ttsSaved = false;
+	}
+
+	function preview(url: string | null) {
+		if (!url) return;
+		previewAudio?.pause();
+		previewAudio = new Audio(url);
+		previewAudio.play().catch(() => {});
 	}
 
 	async function saveTts() {
@@ -229,21 +363,17 @@
 		try {
 			const editable = Object.entries(voices).filter(([p]) => !tmanaged(`voice_${p}`));
 			await api.setTtsSettings({
+				...(tmanaged('provider') ? {} : { provider: ttsProvider }),
 				...(tmanaged('base_url') ? {} : { base_url: ttsBaseUrl }),
 				...(tmanaged('model') ? {} : { model: ttsModel }),
 				...(ttsApiKey && !tmanaged('api_key') ? { api_key: ttsApiKey } : {}),
-				voices: Object.fromEntries(
-					editable.map(([p, v]) => [
-						p,
-						{ voice: v.voice, speed: v.speed, instructions: v.instructions }
-					])
-				)
+				voices: Object.fromEntries(editable)
 			});
 			ttsApiKey = '';
 			await refreshTts();
 			ttsSaved = true;
 		} catch (e) {
-			ttsError = String(e);
+			ttsError = e instanceof Error ? e.message : String(e);
 		}
 	}
 
@@ -477,21 +607,45 @@
 
 	<section>
 		<h2>Voice (text-to-speech) <small class="dim">(admin)</small></h2>
-		<p class="dim">
-			Any OpenAI-compatible <code>/audio/speech</code> endpoint. OpenAI:
-			<code>https://api.openai.com/v1</code> with model <code>gpt-4o-mini-tts</code>
-			(supports style instructions); self-hosted Kokoro (kokoro-fastapi):
-			<code>http://kokoro:8880/v1</code> with model <code>kokoro</code> (pick a voice like
-			<code>af_heart</code>; instructions are ignored). Leave the Base URL empty to turn the
-			feature off — audio buttons only appear when it's configured.
-		</p>
+		<div class="fld">
+			<span>Provider {#if tmanaged('provider')}<em class="dim">(managed)</em>{/if}</span>
+			<div class="choices provider">
+				{#each ttsProviders as prov (prov.name)}
+					<button
+						class="choice"
+						class:selected={ttsProvider === prov.name}
+						disabled={tmanaged('provider')}
+						onclick={() => pickProvider(prov.name)}
+					>
+						<strong>{prov.label}</strong>
+						<small>{prov.default_model || 'any model'}</small>
+					</button>
+				{/each}
+			</div>
+		</div>
+		{#if ttsProvider === 'openai'}
+			<p class="dim">
+				Any OpenAI-compatible <code>/audio/speech</code> endpoint. OpenAI:
+				<code>https://api.openai.com/v1</code> with model <code>gpt-4o-mini-tts</code>
+				(supports style instructions); self-hosted Kokoro (kokoro-fastapi):
+				<code>http://kokoro:8880/v1</code> with model <code>kokoro</code> (pick a voice like
+				<code>af_heart</code>; instructions are ignored). Leave the Base URL empty to turn the
+				feature off — audio buttons only appear when it's configured.
+			</p>
+		{:else}
+			<p class="dim">
+				Base URL is optional — <code>{activeProvider?.default_base_url}</code> is used when blank.
+				Voices are account-specific, so each persona needs one chosen below before its audio
+				works. Your settings for the other provider are kept, not discarded.
+			</p>
+		{/if}
 		<label class="fld">
 			<span>Base URL {#if tmanaged('base_url')}<em class="dim">(managed)</em>{/if}</span>
-			<input type="text" bind:value={ttsBaseUrl} oninput={() => (ttsSaved = false)} disabled={tmanaged('base_url')} placeholder="https://api.openai.com/v1" />
+			<input type="text" bind:value={ttsBaseUrl} oninput={() => (ttsSaved = false)} disabled={tmanaged('base_url')} placeholder={activeProvider?.default_base_url || 'https://api.openai.com/v1'} />
 		</label>
 		<label class="fld">
 			<span>Model {#if tmanaged('model')}<em class="dim">(managed)</em>{/if}</span>
-			<input type="text" bind:value={ttsModel} oninput={() => (ttsSaved = false)} disabled={tmanaged('model')} placeholder="gpt-4o-mini-tts" />
+			<input type="text" bind:value={ttsModel} oninput={() => (ttsSaved = false)} disabled={tmanaged('model')} placeholder={activeProvider?.default_model || 'gpt-4o-mini-tts'} />
 		</label>
 		<label class="fld">
 			<span>API key
@@ -499,23 +653,101 @@
 				{:else if ttsKeySet}<em class="dim">(saved — leave blank to keep)</em>{/if}</span>
 			<input type="password" bind:value={ttsApiKey} oninput={() => (ttsSaved = false)} disabled={tmanaged('api_key')} placeholder={ttsKeySet ? '••••••••' : 'sk-…'} autocomplete="off" />
 		</label>
+		{#if voiceListError}
+			<p class="dim">Couldn't list voices from the provider — enter ids by hand. ({voiceListError})</p>
+		{/if}
 		{#each Object.entries(voices) as [p, v] (p)}
 			<fieldset class="voice">
-				<legend>{p} {#if tmanaged(`voice_${p}`)}<em class="dim">(managed)</em>{/if}</legend>
-				<div class="voicerow">
-					<label class="fld">
-						<span>Voice</span>
-						<input type="text" bind:value={v.voice} oninput={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)} />
-					</label>
-					<label class="fld">
-						<span>Speed</span>
-						<input type="number" min="0.25" max="4" step="0.05" bind:value={v.speed} oninput={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)} />
-					</label>
-				</div>
-				<label class="fld">
-					<span>Style instructions (OpenAI only)</span>
-					<textarea rows="2" bind:value={v.instructions} oninput={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)}></textarea>
-				</label>
+				<legend>
+					{p}
+					{#if tmanaged(`voice_${p}`)}<em class="dim">(managed)</em>{/if}
+					{#if ttsGaps[p]?.length}<em class="gap">— no voice set</em>{/if}
+				</legend>
+				<!-- Rendered from the provider's declared fields, so a new
+				     provider needs no changes here. -->
+				{#each activeProvider?.fields ?? [] as f (f.key)}
+					{#if f.kind === 'longtext'}
+						<label class="fld">
+							<span>{f.label}</span>
+							<textarea rows="2" bind:value={v[f.key]} oninput={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)}></textarea>
+						</label>
+					{:else if f.kind === 'bool'}
+						<label class="fld inline">
+							<input type="checkbox" bind:checked={v[f.key] as boolean} onchange={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)} />
+							<span>{f.label}</span>
+						</label>
+					{:else if f.kind === 'slider'}
+						<label class="fld">
+							<span>{f.label} <em class="dim">{v[f.key]}</em></span>
+							<input type="range" min={f.min ?? 0} max={f.max ?? 1} step={f.step ?? 0.05} bind:value={v[f.key]} oninput={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)} />
+						</label>
+					{:else if f.kind === 'number'}
+						<label class="fld">
+							<span>{f.label}</span>
+							<input type="number" min={f.min ?? undefined} max={f.max ?? undefined} step={f.step ?? undefined} bind:value={v[f.key]} oninput={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)} />
+						</label>
+					{:else if f.required && providerVoices.length}
+						<!-- The provider can enumerate voices: pick by name, audition
+						     with the provider's own preview (costs nothing). -->
+						<div class="fld">
+							<span>{f.label}</span>
+							<div class="voicepick">
+								<select bind:value={v[f.key]} onchange={(e) => applyVoicePreset(p, (e.currentTarget as HTMLSelectElement).value)} disabled={tmanaged(`voice_${p}`)}>
+									<option value="">— choose a voice —</option>
+									{#each providerVoices as pv (pv.id)}
+										<option value={pv.id}>{pv.name}{pv.category ? ` (${pv.category})` : ''}</option>
+									{/each}
+								</select>
+								{#each providerVoices.filter((x) => x.id === v[f.key]) as pv (pv.id)}
+									<button class="audition" title="Preview this voice" onclick={() => preview(pv.preview_url)}>▶</button>
+								{/each}
+							</div>
+							{#each providerVoices.filter((x) => x.id === v[f.key]) as pv (pv.id)}
+								{#if Object.keys(pv.labels).length}
+									<small class="dim">{Object.values(pv.labels).join(' · ')}</small>
+								{/if}
+							{/each}
+						</div>
+					{:else}
+						<label class="fld">
+							<span>{f.label}</span>
+							<input type="text" bind:value={v[f.key]} oninput={() => (ttsSaved = false)} disabled={tmanaged(`voice_${p}`)} placeholder={f.help ?? ''} />
+						</label>
+					{/if}
+				{/each}
+
+				{#if activeProvider?.supports_design && !tmanaged(`voice_${p}`)}
+					{#if designOpen !== p}
+						<button class="design-open" onclick={() => openDesign(p)}>
+							✨ Design a voice from {p}'s description
+						</button>
+					{:else}
+						<div class="design">
+							<p class="dim">
+								Built from how {p} is written to sound — edit if you like, then generate
+								candidates and keep the one that fits. Generating costs provider credits.
+							</p>
+							<textarea rows="5" bind:value={designText} disabled={designBusy}></textarea>
+							<div class="designrow">
+								<button onclick={runDesign} disabled={designBusy || designText.trim().length < 20}>
+									{designBusy ? 'Designing…' : designCandidates.length ? 'Try again' : 'Generate candidates'}
+								</button>
+								<button onclick={() => (designOpen = '')} disabled={designBusy}>Cancel</button>
+							</div>
+							{#if designError}<p class="error">{designError}</p>{/if}
+							{#each designCandidates as cand, i (cand.generated_voice_id)}
+								<div class="candidate">
+									<span class="dim">Candidate {i + 1}{cand.duration_secs ? ` · ${cand.duration_secs.toFixed(1)}s` : ''}</span>
+									<!-- svelte-ignore a11y_media_has_caption -->
+									<audio controls src={cand.audio}></audio>
+									<button onclick={() => keepDesigned(p, cand)} disabled={designBusy}>
+										Use this one
+									</button>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				{/if}
 			</fieldset>
 		{/each}
 		{#if ttsManaged.length}
@@ -773,6 +1005,80 @@
 		text-transform: capitalize;
 		color: var(--gold);
 		padding: 0 0.4rem;
+	}
+
+	.gap {
+		color: var(--danger);
+		font-style: normal;
+		font-size: 0.85em;
+	}
+
+	.provider {
+		margin-top: 0.3rem;
+	}
+
+	.voicepick {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+	}
+
+	.voicepick select {
+		flex: 1;
+	}
+
+	.audition {
+		padding: 0.35rem 0.7rem;
+		line-height: 1;
+	}
+
+	.fld.inline {
+		flex-direction: row;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.fld.inline input {
+		width: auto;
+	}
+
+	.design-open {
+		margin-top: 0.4rem;
+		font-size: 0.9rem;
+	}
+
+	.design {
+		margin-top: 0.6rem;
+		padding: 0.7rem;
+		border: 1px dashed var(--border);
+		border-radius: var(--radius);
+		background: var(--bg-raised);
+	}
+
+	.design textarea {
+		width: 100%;
+	}
+
+	.designrow {
+		display: flex;
+		gap: 0.6rem;
+		margin-top: 0.6rem;
+	}
+
+	.candidate {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		flex-wrap: wrap;
+		margin-top: 0.7rem;
+		padding-top: 0.7rem;
+		border-top: 1px solid var(--border);
+	}
+
+	.candidate audio {
+		height: 2rem;
+		flex: 1;
+		min-width: 12rem;
 	}
 
 	.voicerow {
